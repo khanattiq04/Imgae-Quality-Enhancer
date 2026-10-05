@@ -15,5 +15,16 @@
       "src": "/(.*)",
       "dest": "public/$1"
     }
+    
+  ],
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/public/$1"
+    }
   ]
 }
