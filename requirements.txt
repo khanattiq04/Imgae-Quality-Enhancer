@@ -1,0 +1,4 @@
+Flask>=3.0.0
+Pillow>=10.2.0
+pypdfium2>=4.28.0
+numpy>=1.26.0
