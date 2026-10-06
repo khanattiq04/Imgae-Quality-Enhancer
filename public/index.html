@@ -4,7 +4,6 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Screenshot & Chat Print Enhancer</title>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <style>
     :root {
       --bg: #0f172a;
@@ -73,6 +72,7 @@
     .card-meta { font-size: 0.8rem; color: var(--text-dim); margin-bottom: 1rem; }
     .dl-btn {
       background: var(--success); color: white; text-align: center; text-decoration: none; padding: 0.6rem; border-radius: 6px; font-size: 0.85rem; font-weight: bold; display: block;
+      border: none; cursor: pointer; width: 100%;
     }
     .dl-btn:hover { opacity: 0.9; }
     .print-note { color: #cbd5e1; font-size: 0.88rem; line-height: 1.5; margin: 1rem 0 0; }
@@ -97,6 +97,7 @@
       <div class="control-group">
         <label>Enhancement Profile</label>
         <select id="modeSelect">
+          <option value="print_text">Maximum Print Text (Black &amp; White)</option>
           <option value="chat" selected>💬 WhatsApp & Chat Screenshot (Micro-Text Sharp)</option>
           <option value="document">📄 Document & Scan (Binarized High Contrast)</option>
           <option value="general">🖼️ General Screenshot / Graphic</option>
@@ -174,39 +175,52 @@
       const scale = document.getElementById('scaleSelect').value;
       const dpi = document.getElementById('dpiSelect').value;
 
-      for (let i = 0; i < selectedFiles.length; i++) {
-        const file = selectedFiles[i];
-        const formData = new FormData();
-        formData.append('file', file);
-        formData.append('mode', mode);
-        formData.append('scale', scale);
-        formData.append('dpi', dpi);
+      // Use a few workers at once so a batch uses available CPU cores without
+      // creating too many large upscaled images in memory.
+      let nextFileIndex = 0;
+      let completedFiles = 0;
+      const errors = [];
+      const workerCount = Math.min(
+        selectedFiles.length,
+        3,
+        Math.max(1, Math.floor((navigator.hardwareConcurrency || 4) / 2))
+      );
 
-        try {
-          const res = await fetch('/api/process', { method: 'POST', body: formData });
-          const data = await res.json();
-          if (data.success) {
+      async function worker() {
+        while (nextFileIndex < selectedFiles.length) {
+          const file = selectedFiles[nextFileIndex++];
+          const formData = new FormData();
+          formData.append('file', file);
+          formData.append('mode', mode);
+          formData.append('scale', scale);
+          formData.append('dpi', dpi);
+
+          try {
+            const res = await fetch('/api/process', { method: 'POST', body: formData });
+            const data = await res.json();
+            if (!data.success) throw new Error(data.error || 'Unknown error');
             data.items.forEach(item => {
               processedResults.push(item);
-              renderCard(item);
+              renderCard(item, processedResults.length - 1);
             });
-          } else {
-            alert('Error processing file: ' + (data.error || 'Unknown error'));
+          } catch (err) {
+            console.error('Error processing file:', file.name, err);
+            errors.push(`${file.name}: ${err.message || 'could not be processed'}`);
+          } finally {
+            completedFiles += 1;
+            progressFill.style.width = `${Math.round((completedFiles / selectedFiles.length) * 100)}%`;
           }
-        } catch (err) {
-          console.error('Error processing file:', file.name, err);
-          alert('Failed to connect to backend server for ' + file.name);
         }
-
-        const pct = Math.round(((i + 1) / selectedFiles.length) * 100);
-        progressFill.style.width = `${pct}%`;
       }
 
+      await Promise.all(Array.from({ length: workerCount }, worker));
+
       submitBtn.disabled = false;
-      document.getElementById('resultsHeader').style.display = 'flex';
+      document.getElementById('resultsHeader').style.display = processedResults.length ? 'flex' : 'none';
+      if (errors.length) alert(`${errors.length} file(s) could not be processed:\n${errors.slice(0, 3).join('\n')}`);
     }
 
-    function renderCard(item) {
+    function renderCard(item, index) {
       const gallery = document.getElementById('gallery');
       const card = document.createElement('div');
       card.className = 'card';
@@ -218,7 +232,7 @@
             ${item.width}x${item.height} px &bull; ${item.dpi} DPI embedded<br>
             Recommended print size: up to ${item.print_width_inches}&Prime; &times; ${item.print_height_inches}&Prime; at ${item.source_dpi} PPI
           </div>
-          <a class="dl-btn" href="${item.data_url}" download="${item.filename}">Download HD Image</a>
+          <button class="dl-btn" onclick="downloadItem(${index})">Download HD Image</button>
         </div>
       `;
       gallery.appendChild(card);
@@ -226,17 +240,52 @@
 
     async function downloadAllZip() {
       if (processedResults.length === 0) return;
-      const zip = new JSZip();
-      processedResults.forEach(item => {
-        const base64Data = item.data_url.split(',')[1];
-        zip.file(item.filename, base64Data, { base64: true });
-      });
+      try {
+        const res = await fetch('/api/zip', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items: processedResults })
+        });
+        if (!res.ok) {
+          const error = await res.json().catch(() => ({}));
+          throw new Error(error.error || 'Could not create ZIP file.');
+        }
+        const content = await res.blob();
+        await saveDataUrl('HD_Screenshots_Ready_To_Print.zip', await blobToDataUrl(content));
+      } catch (error) {
+        alert(error.message || 'Could not create ZIP file. Please download the files individually.');
+      }
+    }
 
-      const content = await zip.generateAsync({ type: 'blob' });
+    async function downloadItem(index) {
+      const item = processedResults[index];
+      if (item) await saveDataUrl(item.filename, item.data_url);
+    }
+
+    function blobToDataUrl(blob) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+    }
+
+    async function saveDataUrl(filename, dataUrl) {
+      // The EXE uses this bridge to open the native Windows Save As dialog.
+      if (window.pywebview && window.pywebview.api && window.pywebview.api.save_result) {
+        const result = await window.pywebview.api.save_result(filename, dataUrl);
+        if (!result.success && !result.cancelled) alert(result.error || 'Could not save this file.');
+        return;
+      }
+
+      // Standard browser download remains available in the online version.
       const a = document.createElement('a');
-      a.href = URL.createObjectURL(content);
-      a.download = 'HD_Screenshots_Ready_To_Print.zip';
+      a.href = dataUrl;
+      a.download = filename;
+      document.body.appendChild(a);
       a.click();
+      a.remove();
     }
   </script>
 </body>

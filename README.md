@@ -19,3 +19,18 @@ A complete Python & Web-based tool designed to upscale, sharpen, and convert scr
 1. Upload/Push this project folder to GitHub.
 2. Link your GitHub repository in Vercel.
 3. Deploy! Vercel will automatically read `vercel.json` and host your tool live.
+
+## Windows Desktop App (offline processing)
+The web version uploads each image to the server, so its speed depends on your
+internet connection and server capacity. The desktop version processes files on
+the computer only: no screenshots are uploaded and no internet connection is
+needed after it is built.
+
+1. Install Python 3 for Windows and select **Add python.exe to PATH** during
+   setup.
+2. Double-click `build-windows-exe.bat`.
+3. When the build finishes, open `dist\\ScreenshotHDPrintEnhancer.exe`.
+
+You can copy that one EXE to another Windows PC and run it there; Python is not
+required on the receiving PC. Keep the web deployment as an alternative for
+occasions when you need to use the tool from another device.

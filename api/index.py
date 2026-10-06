@@ -1,10 +1,22 @@
 import io
 import base64
-from flask import Flask, request, jsonify, send_from_directory
+import binascii
+import sys
+import zipfile
+from pathlib import Path
+from flask import Flask, request, jsonify, send_file, send_from_directory
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 import pypdfium2 as pdfium
 
-app = Flask(__name__, static_folder='../public', static_url_path='')
+
+def resource_path(relative_path):
+    """Locate files both in development and inside a PyInstaller EXE."""
+    base_path = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+    return base_path / relative_path
+
+
+PUBLIC_DIR = resource_path("public")
+app = Flask(__name__, static_folder=str(PUBLIC_DIR), static_url_path='')
 
 def enhance_image(img, scale_factor=3, dpi=300, mode="chat"):
     """
@@ -50,6 +62,16 @@ def enhance_image(img, scale_factor=3, dpi=300, mode="chat"):
         sharp_enhancer = ImageEnhance.Sharpness(contrast_img)
         final_img = sharp_enhancer.enhance(1.20)
 
+    elif mode == "print_text":
+        # Maximum text legibility for printing: convert chat/document text to
+        # solid black and white. This cannot recover missing characters, but
+        # it gives the printer the clearest possible edges from the source.
+        text_layer = ImageOps.grayscale(resized)
+        text_layer = ImageOps.autocontrast(text_layer, cutoff=0.5)
+        text_layer = text_layer.filter(ImageFilter.UnsharpMask(radius=1.0, percent=180, threshold=2))
+        text_layer = ImageEnhance.Contrast(text_layer).enhance(1.7)
+        final_img = text_layer.point(lambda pixel: 255 if pixel >= 160 else 0).convert("RGB")
+
     else:
         # GENERAL SCREENSHOT & PHOTO MODE
         sharpened = resized.filter(ImageFilter.UnsharpMask(radius=1.8, percent=150, threshold=2))
@@ -61,7 +83,9 @@ def enhance_image(img, scale_factor=3, dpi=300, mode="chat"):
     # resampling its 3240px copy must be tagged 900 DPI, not 300 DPI.
     embedded_dpi = dpi * scale_factor
     out_buf = io.BytesIO()
-    final_img.save(out_buf, format="PNG", dpi=(embedded_dpi, embedded_dpi), optimize=True)
+    # PNG is lossless at every compression level. Level 3 is much quicker
+    # than optimize=True while preserving identical pixels.
+    final_img.save(out_buf, format="PNG", dpi=(embedded_dpi, embedded_dpi), optimize=False, compress_level=3)
     out_bytes = out_buf.getvalue()
 
     b64_data = base64.b64encode(out_bytes).decode("utf-8")
@@ -79,11 +103,11 @@ def enhance_image(img, scale_factor=3, dpi=300, mode="chat"):
 
 @app.route('/')
 def serve_index():
-    return send_from_directory('../public', 'index.html')
+    return send_from_directory(str(PUBLIC_DIR), 'index.html')
 
 @app.route('/<path:path>')
 def serve_static(path):
-    return send_from_directory('../public', path)
+    return send_from_directory(str(PUBLIC_DIR), path)
 
 @app.route("/api/process", methods=["POST"])
 def process_file():
@@ -100,7 +124,7 @@ def process_file():
         return jsonify({"error": "Scale must be 1x, 2x, 3x, 4x, or 6x."}), 400
     if dpi not in (300, 600):
         return jsonify({"error": "Print density must be 300 or 600 PPI."}), 400
-    if mode not in ("chat", "document", "general"):
+    if mode not in ("chat", "document", "print_text", "general"):
         return jsonify({"error": "Unknown enhancement profile."}), 400
 
     file_bytes = file.read()
@@ -129,6 +153,35 @@ def process_file():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/zip", methods=["POST"])
+def create_zip():
+    """Create result ZIPs locally instead of depending on an online JS library."""
+    payload = request.get_json(silent=True) or {}
+    items = payload.get("items", [])
+    if not isinstance(items, list) or not items:
+        return jsonify({"error": "No enhanced files were supplied."}), 400
+
+    try:
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as output_zip:
+            for item in items:
+                filename = Path(str(item.get("filename", "enhanced-image.png"))).name
+                data_url = str(item.get("data_url", ""))
+                if "," not in data_url:
+                    raise ValueError("An enhanced image is invalid.")
+                image_bytes = base64.b64decode(data_url.split(",", 1)[1], validate=True)
+                output_zip.writestr(filename, image_bytes)
+        archive.seek(0)
+        return send_file(
+            archive,
+            mimetype="application/zip",
+            as_attachment=True,
+            download_name="HD_Screenshots_Ready_To_Print.zip",
+        )
+    except (ValueError, TypeError, binascii.Error) as error:
+        return jsonify({"error": str(error)}), 400
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
