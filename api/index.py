@@ -1,7 +1,7 @@
 import io
 import base64
 from flask import Flask, request, jsonify, send_from_directory
-from PIL import Image, ImageEnhance, ImageFilter
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 import pypdfium2 as pdfium
 
 app = Flask(__name__, static_folder='../public', static_url_path='')
@@ -25,23 +25,22 @@ def enhance_image(img, scale_factor=3, dpi=300, mode="chat"):
     orig_w, orig_h = img.size
     new_w, new_h = orig_w * scale_factor, orig_h * scale_factor
 
+    # A screenshot has a fixed amount of source detail. Enlarging it helps a
+    # printer render smooth edges, but must not make it print physically larger.
+    # The output DPI metadata below keeps its intended physical size intact.
     # 1. High-Order Lanczos Anti-Aliased Resampling
     resized = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
     if mode == "chat":
-        # WHATSAPP & CHAT ENHANCEMENT PIPELINE
-        # Pass 1: Fine micro-sharpening for tiny chat text, timestamps, & ticks
-        micro_sharp = resized.filter(ImageFilter.UnsharpMask(radius=0.8, percent=220, threshold=1))
-        # Pass 2: Macro structural sharpening for chat bubbles & borders
-        macro_sharp = micro_sharp.filter(ImageFilter.UnsharpMask(radius=2.2, percent=130, threshold=2))
-        
-        # Micro-contrast boost so light grey subtext (#8696a0) prints crisp
-        contrast_enhancer = ImageEnhance.Contrast(macro_sharp)
-        contrast_img = contrast_enhancer.enhance(1.18)
-        
-        # Sharpness pass for readable chat text
-        sharp_enhancer = ImageEnhance.Sharpness(contrast_img)
-        final_img = sharp_enhancer.enhance(1.30)
+        # CHAT PRINT PIPELINE: enhance luminance only so small text gains
+        # separation without changing bubble or emoji colours.
+        y, cb, cr = resized.convert("YCbCr").split()
+        y = ImageOps.autocontrast(y, cutoff=0.4)
+        # One controlled pass avoids the light/dark halos caused by stacking
+        # sharpen filters, which are especially obvious on printed text.
+        y = y.filter(ImageFilter.UnsharpMask(radius=1.15, percent=165, threshold=3))
+        y = ImageEnhance.Contrast(y).enhance(1.10)
+        final_img = Image.merge("YCbCr", (y, cb, cr)).convert("RGB")
 
     elif mode == "document":
         # DOCUMENT & SCAN MODE (Binarized High Contrast)
@@ -57,9 +56,12 @@ def enhance_image(img, scale_factor=3, dpi=300, mode="chat"):
         contrast_enhancer = ImageEnhance.Contrast(sharpened)
         final_img = contrast_enhancer.enhance(1.08)
 
-    # Save with embedded print DPI headers (300/600 DPI)
+    # Preserve the physical size of the source at the requested print density.
+    # Example: a 1080px source for 300 PPI is a 3.6in print; after 3x
+    # resampling its 3240px copy must be tagged 900 DPI, not 300 DPI.
+    embedded_dpi = dpi * scale_factor
     out_buf = io.BytesIO()
-    final_img.save(out_buf, format="PNG", dpi=(dpi, dpi), optimize=True)
+    final_img.save(out_buf, format="PNG", dpi=(embedded_dpi, embedded_dpi), optimize=True)
     out_bytes = out_buf.getvalue()
 
     b64_data = base64.b64encode(out_bytes).decode("utf-8")
@@ -69,7 +71,10 @@ def enhance_image(img, scale_factor=3, dpi=300, mode="chat"):
         "height": new_h,
         "orig_width": orig_w,
         "orig_height": orig_h,
-        "dpi": dpi
+        "dpi": embedded_dpi,
+        "source_dpi": dpi,
+        "print_width_inches": round(orig_w / dpi, 2),
+        "print_height_inches": round(orig_h / dpi, 2),
     }
 
 @app.route('/')
@@ -90,6 +95,13 @@ def process_file():
     scale = int(request.form.get("scale", 3))
     dpi = int(request.form.get("dpi", 300))
     mode = request.form.get("mode", "chat")
+
+    if scale not in (1, 2, 3, 4, 6):
+        return jsonify({"error": "Scale must be 1x, 2x, 3x, 4x, or 6x."}), 400
+    if dpi not in (300, 600):
+        return jsonify({"error": "Print density must be 300 or 600 PPI."}), 400
+    if mode not in ("chat", "document", "general"):
+        return jsonify({"error": "Unknown enhancement profile."}), 400
 
     file_bytes = file.read()
     results = []

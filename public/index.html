@@ -75,13 +75,15 @@
       background: var(--success); color: white; text-align: center; text-decoration: none; padding: 0.6rem; border-radius: 6px; font-size: 0.85rem; font-weight: bold; display: block;
     }
     .dl-btn:hover { opacity: 0.9; }
+    .print-note { color: #cbd5e1; font-size: 0.88rem; line-height: 1.5; margin: 1rem 0 0; }
+    .print-note strong { color: #f8fafc; }
   </style>
 </head>
 <body>
   <div class="container">
     <header>
       <h1>Screenshot & Chat Print Enhancer</h1>
-      <p>Convert blurry WhatsApp chats, web screenshots, & PDFs into sharp 300 DPI print-ready images</p>
+      <p>Sharpen WhatsApp chats for print and keep their original-detail print size accurate</p>
     </header>
 
     <div class="upload-card" id="dropZone" onclick="document.getElementById('fileInput').click()">
@@ -106,6 +108,7 @@
           <option value="2">2x Resolution</option>
           <option value="3" selected>3x Resolution (Recommended for Chat)</option>
           <option value="4">4x Ultra HD Resolution</option>
+          <option value="6">6x Extra-large export</option>
         </select>
       </div>
       <div class="control-group">
@@ -118,6 +121,7 @@
     </div>
 
     <button class="btn" id="submitBtn" onclick="processFiles()">Enhance & Sharpen All Files</button>
+    <p class="print-note"><strong>For a crisp print:</strong> download the PNG and choose <strong>Actual size / 100%</strong> in the print dialog—do not use “Fit to page”. The result card shows the largest recommended size at your selected PPI. Enlarging beyond that cannot create missing detail from a blurry original.</p>
 
     <div class="progress-bar" id="progressBar">
       <div class="progress-fill" id="progressFill"></div>
@@ -211,7 +215,8 @@
         <div class="card-body">
           <div class="card-title" title="${item.filename}">${item.filename}</div>
           <div class="card-meta">
-            ${item.width}x${item.height} px • ${item.dpi} DPI
+            ${item.width}x${item.height} px &bull; ${item.dpi} DPI embedded<br>
+            Recommended print size: up to ${item.print_width_inches}&Prime; &times; ${item.print_height_inches}&Prime; at ${item.source_dpi} PPI
           </div>
           <a class="dl-btn" href="${item.data_url}" download="${item.filename}">Download HD Image</a>
         </div>
