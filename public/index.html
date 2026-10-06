@@ -77,6 +77,18 @@
     .dl-btn:hover { opacity: 0.9; }
     .print-note { color: #cbd5e1; font-size: 0.88rem; line-height: 1.5; margin: 1rem 0 0; }
     .print-note strong { color: #f8fafc; }
+    .warning-note {
+      display: none;
+      margin-top: 0.75rem;
+      padding: 0.75rem 0.9rem;
+      border-radius: 8px;
+      border: 1px solid #92400e;
+      background: rgba(146, 64, 14, 0.18);
+      color: #fed7aa;
+      font-size: 0.85rem;
+      line-height: 1.4;
+    }
+    .warning-note strong { color: #ffedd5; }
   </style>
 </head>
 <body>
@@ -97,6 +109,7 @@
       <div class="control-group">
         <label>Enhancement Profile</label>
         <select id="modeSelect">
+          <option value="ai_reconstruction">🤖 AI reconstruction (clearer preview for print, may alter fine text/numbers)</option>
           <option value="print_text">Maximum Print Text (Black &amp; White)</option>
           <option value="chat" selected>💬 WhatsApp & Chat Screenshot (Micro-Text Sharp)</option>
           <option value="document">📄 Document & Scan (Binarized High Contrast)</option>
@@ -123,6 +136,7 @@
 
     <button class="btn" id="submitBtn" onclick="processFiles()">Enhance & Sharpen All Files</button>
     <p class="print-note"><strong>For a crisp print:</strong> download the PNG and choose <strong>Actual size / 100%</strong> in the print dialog—do not use “Fit to page”. The result card shows the largest recommended size at your selected PPI. Enlarging beyond that cannot create missing detail from a blurry original.</p>
+    <p class="warning-note" id="aiWarning"><strong>AI reconstruction:</strong> makes the attached preview look much clearer for printing, but may introduce incorrect fine text/numbers.</p>
 
     <div class="progress-bar" id="progressBar">
       <div class="progress-fill" id="progressFill"></div>
@@ -140,9 +154,13 @@
     const fileInput = document.getElementById('fileInput');
     const dropZone = document.getElementById('dropZone');
     const fileCount = document.getElementById('fileCount');
+    const modeSelect = document.getElementById('modeSelect');
+    const aiWarning = document.getElementById('aiWarning');
     let selectedFiles = [];
     let processedResults = [];
 
+    modeSelect.addEventListener('change', syncModeWarning);
+    syncModeWarning();
     fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
     dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
     dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
@@ -171,7 +189,7 @@
       gallery.innerHTML = '';
       processedResults = [];
 
-      const mode = document.getElementById('modeSelect').value;
+      const mode = modeSelect.value;
       const scale = document.getElementById('scaleSelect').value;
       const dpi = document.getElementById('dpiSelect').value;
 
@@ -286,6 +304,11 @@
       document.body.appendChild(a);
       a.click();
       a.remove();
+    }
+
+    function syncModeWarning() {
+      const usingAiMode = modeSelect.value === 'ai_reconstruction';
+      aiWarning.style.display = usingAiMode ? 'block' : 'none';
     }
   </script>
 </body>

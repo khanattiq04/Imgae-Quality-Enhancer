@@ -1,9 +1,16 @@
 import io
 import base64
 import binascii
+import hashlib
+import os
 import sys
+import threading
+import urllib.error
+import urllib.request
 import zipfile
+from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlparse
 from flask import Flask, request, jsonify, send_file, send_from_directory
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 import pypdfium2 as pdfium
@@ -17,6 +24,100 @@ def resource_path(relative_path):
 
 PUBLIC_DIR = resource_path("public")
 app = Flask(__name__, static_folder=str(PUBLIC_DIR), static_url_path='')
+
+AI_MODEL_COMMIT = "06c7bd65b0305c2955328f8f2721ea86c341f660"
+AI_MODELS = {
+    2: ("EDSR_x2.pb", 38490162, "7087df167eae8865b25b4f6032c819aacde25b8a"),
+    3: ("EDSR_x3.pb", 38524784, "9b9082ceca0d5a2fc6d6bae7456e2c7934b3aa4d"),
+    4: ("EDSR_x4.pb", 38573255, "09b872b26a6ba8d43abe433e65e65477ff8714ea"),
+}
+AI_MODEL_LOCK = threading.Lock()
+
+
+def _ai_model_path(model_scale):
+    filename, expected_size, expected_git_hash = AI_MODELS[model_scale]
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        cache_dir = Path(local_app_data) / "ScreenshotHDPrintEnhancer" / "models"
+    else:
+        cache_dir = Path.home() / ".cache" / "screenshot-hd-print-enhancer" / "models"
+
+    model_path = cache_dir / filename
+    if model_path.is_file() and model_path.stat().st_size == expected_size:
+        return model_path
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    partial_path = model_path.with_suffix(model_path.suffix + ".part")
+    url = (
+        "https://raw.githubusercontent.com/Saafke/EDSR_Tensorflow/"
+        f"{AI_MODEL_COMMIT}/models/{filename}"
+    )
+    request = urllib.request.Request(url, headers={"User-Agent": "ScreenshotHDPrintEnhancer"})
+    digest = hashlib.sha1(f"blob {expected_size}\0".encode("ascii"))
+    total_size = 0
+
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            with partial_path.open("wb") as model_file:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total_size += len(chunk)
+                    if total_size > expected_size:
+                        raise RuntimeError("The AI model download was larger than expected.")
+                    digest.update(chunk)
+                    model_file.write(chunk)
+
+        if total_size != expected_size or digest.hexdigest() != expected_git_hash:
+            raise RuntimeError("The AI model download failed its integrity check.")
+        partial_path.replace(model_path)
+    except (OSError, urllib.error.URLError) as error:
+        raise RuntimeError(
+            "Could not download the local AI model. Check your internet connection and try again."
+        ) from error
+    finally:
+        if partial_path.exists():
+            partial_path.unlink()
+
+    return model_path
+
+
+@lru_cache(maxsize=3)
+def _load_ai_model(model_scale):
+    try:
+        import cv2
+    except ImportError as error:
+        raise RuntimeError(
+            "AI reconstruction needs OpenCV. Rebuild or reinstall the desktop app dependencies."
+        ) from error
+
+    if not hasattr(cv2, "dnn_superres"):
+        raise RuntimeError(
+            "AI reconstruction needs the OpenCV contrib modules. Rebuild or reinstall the desktop app."
+        )
+
+    model = cv2.dnn_superres.DnnSuperResImpl_create()
+    model.readModel(str(_ai_model_path(model_scale)))
+    model.setModel("edsr", model_scale)
+    return model
+
+
+def _reconstruct_image(img, width, height, model_scale):
+    import cv2
+    import numpy as np
+
+    rgb = np.asarray(img.convert("RGB"))
+    with AI_MODEL_LOCK:
+        reconstructed = _load_ai_model(model_scale).upsample(cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+    reconstructed = cv2.cvtColor(reconstructed, cv2.COLOR_BGR2RGB)
+    if reconstructed.shape[1] != width or reconstructed.shape[0] != height:
+        reconstructed = cv2.resize(
+            reconstructed,
+            (width, height),
+            interpolation=cv2.INTER_LANCZOS4,
+        )
+    return Image.fromarray(reconstructed)
 
 def enhance_image(img, scale_factor=3, dpi=300, mode="chat"):
     """
@@ -37,13 +138,19 @@ def enhance_image(img, scale_factor=3, dpi=300, mode="chat"):
     orig_w, orig_h = img.size
     new_w, new_h = orig_w * scale_factor, orig_h * scale_factor
 
-    # A screenshot has a fixed amount of source detail. Enlarging it helps a
-    # printer render smooth edges, but must not make it print physically larger.
-    # The output DPI metadata below keeps its intended physical size intact.
-    # 1. High-Order Lanczos Anti-Aliased Resampling
-    resized = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+    if mode == "ai_reconstruction":
+        model_scale = min(max(scale_factor, 2), 4)
+        final_img = _reconstruct_image(img, new_w, new_h, model_scale)
+    else:
+        # A screenshot has a fixed amount of source detail. Enlarging it helps a
+        # printer render smooth edges, but must not make it print physically larger.
+        # The output DPI metadata below keeps its intended physical size intact.
+        resized = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
-    if mode == "chat":
+    if mode == "ai_reconstruction":
+        # The generative model output already produced final_img above.
+        pass
+    elif mode == "chat":
         # CHAT PRINT PIPELINE: enhance luminance only so small text gains
         # separation without changing bubble or emoji colours.
         y, cb, cr = resized.convert("YCbCr").split()
@@ -124,8 +231,16 @@ def process_file():
         return jsonify({"error": "Scale must be 1x, 2x, 3x, 4x, or 6x."}), 400
     if dpi not in (300, 600):
         return jsonify({"error": "Print density must be 300 or 600 PPI."}), 400
-    if mode not in ("chat", "document", "print_text", "general"):
+    if mode not in ("chat", "document", "print_text", "general", "ai_reconstruction"):
         return jsonify({"error": "Unknown enhancement profile."}), 400
+    if mode == "ai_reconstruction":
+        if scale == 1:
+            return jsonify({"error": "AI reconstruction requires an upscale multiplier of 2x or higher."}), 400
+        hostname = urlparse(request.host_url).hostname
+        if hostname not in ("localhost", "127.0.0.1", "::1"):
+            return jsonify({
+                "error": "AI reconstruction is only available in the desktop app or a local server."
+            }), 400
 
     file_bytes = file.read()
     results = []
@@ -137,7 +252,8 @@ def process_file():
             for idx, page in enumerate(pdf):
                 render_scale = (dpi / 72.0)
                 pil_img = page.render(scale=render_scale).to_pil()
-                processed = enhance_image(pil_img, scale_factor=1, dpi=dpi, mode=mode)
+                pdf_scale = 4 if mode == "ai_reconstruction" else 1
+                processed = enhance_image(pil_img, scale_factor=pdf_scale, dpi=dpi, mode=mode)
                 base_name = filename.rsplit(".", 1)[0]
                 processed["filename"] = f"{base_name}_page_{idx + 1}_HD.png"
                 results.append(processed)

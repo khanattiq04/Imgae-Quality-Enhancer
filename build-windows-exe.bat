@@ -11,7 +11,7 @@ if errorlevel 1 (
 
 py -3 -m pip install --upgrade pip
 py -3 -m pip install -r requirements-desktop.txt
-py -3 -m PyInstaller --noconfirm --clean --onefile --windowed --name ScreenshotHDPrintEnhancer --add-data "public;public" --collect-all webview desktop.py
+py -3 -m PyInstaller --noconfirm --clean --onefile --windowed --name ScreenshotHDPrintEnhancer --add-data "public;public" --collect-all webview --collect-all cv2 desktop.py
 
 echo.
 echo Done. Your installer-free desktop app is here:

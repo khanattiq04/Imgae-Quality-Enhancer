@@ -34,3 +34,12 @@ needed after it is built.
 You can copy that one EXE to another Windows PC and run it there; Python is not
 required on the receiving PC. Keep the web deployment as an alternative for
 occasions when you need to use the tool from another device.
+
+## Enhancement profiles
+- **AI reconstruction:** makes the attached preview look much clearer for printing, but may introduce incorrect fine text/numbers.
+- **Maximum Print Text (Black & White):** prioritizes hard black/white text edges for the clearest print readability.
+- **WhatsApp & Chat Screenshot:** balances text sharpening while keeping chat colors natural.
+- **Document & Scan:** boosts contrast and edge definition for scanned or document-like pages.
+- **General Screenshot / Graphic:** moderate enhancement for mixed screenshots and graphics.
+
+> Note: AI reconstruction is intended for local desktop use where the model (~38MB) is downloaded once and then reused from local storage.
