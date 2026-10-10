@@ -110,6 +110,8 @@
         <label>Enhancement Profile</label>
         <select id="modeSelect">
           <option value="ai_reconstruction">🤖 AI reconstruction (clearer preview for print, may alter fine text/numbers)</option>
+          <option value="receipt_chat">🧾 Receipt/Table inside Chat (Ultra Text Clarity)</option>
+          <option value="receipt_spaced">🧾 Receipt – Letter Spacing (thinner strokes, clearer gaps)</option>
           <option value="print_text">Maximum Print Text (Black &amp; White)</option>
           <option value="chat" selected>💬 WhatsApp & Chat Screenshot (Micro-Text Sharp)</option>
           <option value="document">📄 Document & Scan (Binarized High Contrast)</option>
@@ -135,7 +137,7 @@
     </div>
 
     <button class="btn" id="submitBtn" onclick="processFiles()">Enhance & Sharpen All Files</button>
-    <p class="print-note"><strong>For a crisp print:</strong> download the PNG and choose <strong>Actual size / 100%</strong> in the print dialog—do not use “Fit to page”. The result card shows the largest recommended size at your selected PPI. Enlarging beyond that cannot create missing detail from a blurry original.</p>
+    <p class="print-note"><strong>For a crisp print:</strong> download the PDF; it is enlarged to fill an A4 page with lossless quality, so print it with <strong>Fit to page / A4</strong> (or Actual size) and your printer's highest quality setting. Small text in a phone screenshot is physically tiny at its original size, so enlarging to a full page is what makes it readable. Enlarging cannot create detail that the original does not contain.</p>
     <p class="warning-note" id="aiWarning"><strong>AI reconstruction:</strong> makes the attached preview look much clearer for printing, but may introduce incorrect fine text/numbers.</p>
 
     <div class="progress-bar" id="progressBar">
@@ -144,7 +146,7 @@
 
     <div class="action-header" id="resultsHeader" style="display: none;">
       <h2>Enhanced HD Results</h2>
-      <button class="btn" style="width: auto; background: var(--success); color: white;" onclick="downloadAllZip()">Download All (.ZIP)</button>
+      <button class="btn" style="width: auto; background: var(--success); color: white;" onclick="downloadAllZip()">Download All PDFs (.ZIP)</button>
     </div>
 
     <div class="gallery" id="gallery"></div>
@@ -250,7 +252,7 @@
             ${item.width}x${item.height} px &bull; ${item.dpi} DPI embedded<br>
             Recommended print size: up to ${item.print_width_inches}&Prime; &times; ${item.print_height_inches}&Prime; at ${item.source_dpi} PPI
           </div>
-          <button class="dl-btn" onclick="downloadItem(${index})">Download HD Image</button>
+          <button class="dl-btn" onclick="downloadItem(${index})">Download PDF</button>
         </div>
       `;
       gallery.appendChild(card);
@@ -277,7 +279,22 @@
 
     async function downloadItem(index) {
       const item = processedResults[index];
-      if (item) await saveDataUrl(item.filename, item.data_url);
+      if (!item) return;
+      try {
+        const res = await fetch('/api/pdf', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ data_url: item.data_url })
+        });
+        if (!res.ok) {
+          const error = await res.json().catch(() => ({}));
+          throw new Error(error.error || 'Could not create PDF file.');
+        }
+        const filename = item.filename.replace(/\.png$/i, '.pdf');
+        await saveDataUrl(filename, await blobToDataUrl(await res.blob()));
+      } catch (error) {
+        alert(error.message || 'Could not download this PDF.');
+      }
     }
 
     function blobToDataUrl(blob) {

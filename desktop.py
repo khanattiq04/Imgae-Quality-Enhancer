@@ -17,9 +17,14 @@ from api.index import app
 
 def save_result(filename, data_url):
     """Save a download through Windows, bypassing WebView download handling."""
-    safe_filename = Path(str(filename)).name or "enhanced-image.png"
+    safe_filename = Path(str(filename)).name or "enhanced-image.pdf"
     extension = Path(safe_filename).suffix.lower()
-    file_types = ("ZIP archive (*.zip)",) if extension == ".zip" else ("PNG image (*.png)",)
+    file_types_by_extension = {
+        ".pdf": ("PDF document (*.pdf)",),
+        ".png": ("PNG image (*.png)",),
+        ".zip": ("ZIP archive (*.zip)",),
+    }
+    file_types = file_types_by_extension.get(extension, ("All files (*.*)",))
     selected_path = app_window.create_file_dialog(
         webview.SAVE_DIALOG,
         save_filename=safe_filename,

@@ -4,7 +4,7 @@ A complete Python & Web-based tool designed to upscale, sharpen, and convert scr
 
 ## Project Structure
 - `api/index.py`: Python Flask backend engine with PIL and pypdfium2 upscaling logic.
-- `public/index.html`: Responsive drag-and-drop web GUI with batch processing and instant download.
+- `public/index.html`: Responsive drag-and-drop web GUI with batch processing, individual PDF downloads, and a ZIP of PDFs.
 - `requirements.txt`: Python package dependencies.
 - `vercel.json`: Vercel serverless deployment routing config.
 
@@ -37,6 +37,7 @@ occasions when you need to use the tool from another device.
 
 ## Enhancement profiles
 - **AI reconstruction:** makes the attached preview look much clearer for printing, but may introduce incorrect fine text/numbers.
+- **Receipt/Table inside Chat:** tuned for tiny receipt rows/columns shared in chat screenshots; strongest colour-preserving text sharpening.
 - **Maximum Print Text (Black & White):** prioritizes hard black/white text edges for the clearest print readability.
 - **WhatsApp & Chat Screenshot:** balances text sharpening while keeping chat colors natural.
 - **Document & Scan:** boosts contrast and edge definition for scanned or document-like pages.

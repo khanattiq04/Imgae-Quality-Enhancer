@@ -1,4 +1,4 @@
-import io
+﻿import io
 import base64
 import binascii
 import hashlib
@@ -8,11 +8,12 @@ import threading
 import urllib.error
 import urllib.request
 import zipfile
+import zlib
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlparse
 from flask import Flask, request, jsonify, send_file, send_from_directory
-from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps, ImageStat
 import pypdfium2 as pdfium
 
 
@@ -157,7 +158,7 @@ def enhance_image(img, scale_factor=3, dpi=300, mode="chat"):
         y = ImageOps.autocontrast(y, cutoff=0.4)
         # One controlled pass avoids the light/dark halos caused by stacking
         # sharpen filters, which are especially obvious on printed text.
-        y = y.filter(ImageFilter.UnsharpMask(radius=1.15, percent=165, threshold=3))
+        y = y.filter(ImageFilter.UnsharpMask(radius=0.4 * scale_factor, percent=165, threshold=3))
         y = ImageEnhance.Contrast(y).enhance(1.10)
         final_img = Image.merge("YCbCr", (y, cb, cr)).convert("RGB")
 
@@ -178,6 +179,31 @@ def enhance_image(img, scale_factor=3, dpi=300, mode="chat"):
         text_layer = text_layer.filter(ImageFilter.UnsharpMask(radius=1.0, percent=180, threshold=2))
         text_layer = ImageEnhance.Contrast(text_layer).enhance(1.7)
         final_img = text_layer.point(lambda pixel: 255 if pixel >= 160 else 0).convert("RGB")
+
+    elif mode == "receipt_chat":
+        # Receipt/table screenshots embedded in chat bubbles need stronger edge
+        # separation than regular chat mode because each character starts tiny.
+        # Only luminance is sharpened (no thresholding) so coloured headers and
+        # bars stay intact. The radius grows with the upscale factor so the
+        # sharpening acts on the original pixel edges, not on the interpolation.
+        y, cb, cr = resized.convert("YCbCr").split()
+        y = ImageOps.autocontrast(y, cutoff=0.3)
+        y = y.filter(ImageFilter.UnsharpMask(radius=0.5 * scale_factor, percent=230, threshold=2))
+        y = y.filter(ImageFilter.UnsharpMask(radius=0.25 * scale_factor, percent=120, threshold=2))
+        y = ImageEnhance.Contrast(y).enhance(1.12)
+        final_img = Image.merge("YCbCr", (y, cb, cr)).convert("RGB")
+
+    elif mode == "receipt_spaced":
+        # Letters that touch in the source cannot be moved apart, but thinning
+        # the strokes widens the gaps between them so printed text separates.
+        y, cb, cr = resized.convert("YCbCr").split()
+        y = ImageOps.autocontrast(y, cutoff=0.3)
+        y = y.filter(ImageFilter.UnsharpMask(radius=0.5 * scale_factor, percent=200, threshold=2))
+        dark_text = ImageStat.Stat(y).mean[0] > 127
+        thinned = y.filter(ImageFilter.MaxFilter(3) if dark_text else ImageFilter.MinFilter(3))
+        y = Image.blend(y, thinned, 0.85)
+        y = ImageEnhance.Contrast(y).enhance(1.25)
+        final_img = Image.merge("YCbCr", (y, cb, cr)).convert("RGB")
 
     else:
         # GENERAL SCREENSHOT & PHOTO MODE
@@ -216,6 +242,131 @@ def serve_index():
 def serve_static(path):
     return send_from_directory(str(PUBLIC_DIR), path)
 
+
+A4_POINTS = (595.276, 841.890)
+STATUS_BAR_WIDTH_RATIO = 0.11
+NAV_BAR_WIDTH_RATIO = 0.10
+CHAT_HEADER_END_WIDTH_RATIO = 0.26
+RECEIPT_LABEL_WIDTH_RATIO = 0.09
+
+
+def _find_receipt_rows(image, min_row):
+    """Return (top, bottom) of the tallest white receipt card below min_row.
+
+    Only the right-hand band is scanned, because the receipt is a forwarded
+    message and sits there, while incoming bubbles are at the left.
+    """
+    import numpy as np
+
+    small_w = 200
+    scale = small_w / image.width
+    small = np.asarray(image.resize((small_w, max(1, int(image.height * scale))), Image.Resampling.BOX), dtype=np.uint8)
+    band = small[:, int(small_w * 0.45):int(small_w * 0.9)]
+    row_white = (band.min(axis=2) >= 240).mean(axis=1) > 0.08
+    gap_allowed = max(2, int(small.shape[0] * 0.018))
+    best, run_start, last_true = None, None, None
+    for y in range(int(min_row * scale), small.shape[0]):
+        if row_white[y]:
+            if run_start is None:
+                run_start = y
+            last_true = y
+        elif run_start is not None and y - last_true > gap_allowed:
+            if best is None or last_true - run_start > best[1] - best[0]:
+                best = (run_start, last_true)
+            run_start = None
+    if run_start is not None and (best is None or last_true - run_start > best[1] - best[0]):
+        best = (run_start, last_true)
+    if best is None or best[1] - best[0] < small.shape[0] * 0.05:
+        return None
+    return int(best[0] / scale), int((best[1] + 1) / scale)
+
+
+def _fit_chat_screenshot(image):
+    """Trim a phone chat screenshot so profile, receipt and the message after it fit one page.
+
+    The phone status bar and navigation bar are always dropped. If the rest is
+    still taller than an A4 page at full width, the part between the profile
+    header and the receipt is dropped; the receipt and what follows are kept.
+    """
+    width, height = image.size
+    if height < width * 1.3:
+        return image
+    status_h = int(width * STATUS_BAR_WIDTH_RATIO)
+    nav_h = int(width * NAV_BAR_WIDTH_RATIO)
+    header_end = int(width * CHAT_HEADER_END_WIDTH_RATIO)
+    page_rows = int(A4_POINTS[1] / (A4_POINTS[0] / width))
+
+    receipt = _find_receipt_rows(image, header_end)
+    image = image.crop((0, status_h, width, height - nav_h))
+    height = image.height
+    header_h = header_end - status_h
+    if height <= page_rows or not receipt or page_rows - header_h < 1:
+        return image
+
+    body_h = page_rows - header_h
+    start = receipt[0] - status_h - int(width * RECEIPT_LABEL_WIDTH_RATIO)
+    start = min(max(header_h, start), height - body_h)
+    combined = Image.new("RGB", (width, page_rows))
+    combined.paste(image.crop((0, 0, width, header_h)), (0, 0))
+    combined.paste(image.crop((0, start, width, start + body_h)), (0, header_h))
+    return combined
+
+
+def enhanced_image_to_pdf(image_bytes):
+    """Place the image edge to edge, at full page width, in a lossless PDF.
+
+    A tall screenshot that cannot be trimmed to one page is sliced across as
+    many pages as needed. Pillow stores RGB PDF images as JPEG, which smears
+    tiny text, so the PDF is written directly with Flate (lossless) compression.
+    """
+    with Image.open(io.BytesIO(image_bytes)) as source:
+        image = _fit_chat_screenshot(source.convert("RGB"))
+    width, height = image.size
+    page_w, page_h = A4_POINTS if height >= width else A4_POINTS[::-1]
+    fit = page_w / width
+    rows_per_page = max(1, int(page_h / fit))
+
+    page_ids = []
+    objects = [None, None]
+    for top in range(0, height, rows_per_page):
+        slice_img = image.crop((0, top, width, min(top + rows_per_page, height)))
+        slice_h = slice_img.height
+        draw_h = slice_h * fit
+        content = f"q {page_w:.3f} 0 0 {draw_h:.3f} 0 {page_h - draw_h:.3f} cm /Im0 Do Q".encode("ascii")
+        pixels = zlib.compress(slice_img.tobytes(), 6)
+        page_no = len(objects) + 1
+        page_ids.append(page_no)
+        objects += [
+            (
+                f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {page_w:.3f} {page_h:.3f}] "
+                f"/Resources << /XObject << /Im0 {page_no + 2} 0 R >> >> /Contents {page_no + 1} 0 R >>"
+            ).encode("ascii"),
+            b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream",
+            (
+                f"<< /Type /XObject /Subtype /Image /Width {width} /Height {slice_h} "
+                f"/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode "
+                f"/Length {len(pixels)} >>\nstream\n"
+            ).encode("ascii") + pixels + b"\nendstream",
+        ]
+    kids = " ".join(f"{i} 0 R" for i in page_ids)
+    objects[0] = b"<< /Type /Catalog /Pages 2 0 R >>"
+    objects[1] = f"<< /Type /Pages /Kids [{kids}] /Count {len(page_ids)} >>".encode("ascii")
+    pdf = io.BytesIO()
+    pdf.write(b"%PDF-1.4\n")
+    offsets = []
+    for number, body in enumerate(objects, start=1):
+        offsets.append(pdf.tell())
+        pdf.write(f"{number} 0 obj\n".encode("ascii") + body + b"\nendobj\n")
+    xref_start = pdf.tell()
+    pdf.write(f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode("ascii"))
+    for offset in offsets:
+        pdf.write(f"{offset:010d} 00000 n \n".encode("ascii"))
+    pdf.write(
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_start}\n%%EOF\n".encode("ascii")
+    )
+    return pdf.getvalue()
+
+
 @app.route("/api/process", methods=["POST"])
 def process_file():
     if "file" not in request.files:
@@ -231,7 +382,7 @@ def process_file():
         return jsonify({"error": "Scale must be 1x, 2x, 3x, 4x, or 6x."}), 400
     if dpi not in (300, 600):
         return jsonify({"error": "Print density must be 300 or 600 PPI."}), 400
-    if mode not in ("chat", "document", "print_text", "general", "ai_reconstruction"):
+    if mode not in ("chat", "document", "print_text", "receipt_chat", "general", "ai_reconstruction"):
         return jsonify({"error": "Unknown enhancement profile."}), 400
     if mode == "ai_reconstruction":
         if scale == 1:
@@ -283,12 +434,13 @@ def create_zip():
         archive = io.BytesIO()
         with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as output_zip:
             for item in items:
-                filename = Path(str(item.get("filename", "enhanced-image.png"))).name
+                image_name = Path(str(item.get("filename", "enhanced-image.png"))).name
+                filename = Path(image_name).stem + ".pdf"
                 data_url = str(item.get("data_url", ""))
                 if "," not in data_url:
                     raise ValueError("An enhanced image is invalid.")
                 image_bytes = base64.b64decode(data_url.split(",", 1)[1], validate=True)
-                output_zip.writestr(filename, image_bytes)
+                output_zip.writestr(filename, enhanced_image_to_pdf(image_bytes))
         archive.seek(0)
         return send_file(
             archive,
@@ -296,8 +448,31 @@ def create_zip():
             as_attachment=True,
             download_name="HD_Screenshots_Ready_To_Print.zip",
         )
-    except (ValueError, TypeError, binascii.Error) as error:
+    except (ValueError, TypeError, binascii.Error, OSError) as error:
         return jsonify({"error": str(error)}), 400
+
+
+@app.route("/api/pdf", methods=["POST"])
+def create_pdf():
+    """Convert an enhanced PNG into a print-sized PDF."""
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify({"error": "An enhanced image is required."}), 400
+    data_url = payload.get("data_url")
+    if not isinstance(data_url, str) or "," not in data_url:
+        return jsonify({"error": "An enhanced image is required."}), 400
+
+    try:
+        image_bytes = base64.b64decode(data_url.split(",", 1)[1], validate=True)
+        pdf = io.BytesIO(enhanced_image_to_pdf(image_bytes))
+        return send_file(
+            pdf,
+            mimetype="application/pdf",
+            as_attachment=True,
+            download_name="enhanced-image.pdf",
+        )
+    except (ValueError, TypeError, binascii.Error, OSError) as error:
+        return jsonify({"error": f"Could not create PDF: {error}"}), 400
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
