@@ -16,6 +16,19 @@ from flask import Flask, request, jsonify, send_file, send_from_directory
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 import pypdfium2 as pdfium
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from image_processor import EnhancementSettings, encode_png, load_image, process_image
+from text_clarity import (
+    ClarityConfig,
+    analyze_clarity,
+    enhance_luma,
+    make_config,
+    refine_edges,
+)
+
 
 def resource_path(relative_path):
     """Locate files both in development and inside a PyInstaller EXE."""
@@ -364,78 +377,113 @@ def _find_all_receipt_regions(img):
     return regions
 
 
-def _enhance_receipt_patch_uniform(patch, scale_factor):
-    """Sharpen receipt values and text with uniform font-weight and no halos.
+_MODE_PROFILES = {"text_focused": "crisp", "print_text": "bw"}
 
-    Operates purely on the luminance channel so colors (blue headers, green
-    status badges, red debits) are perfectly preserved.
-    Normalizes the local card/paper background and deepens character strokes
-    evenly so that all digits and letters print crisp with identical weight,
-    without directional halos or overshoot.
+
+def _clarity_profile_for_mode(mode):
+    """Natural colour is the default; crisp text and B&W print are explicit modes."""
+    return _MODE_PROFILES.get(mode, "natural")
+
+
+def _new_clarity_report(config):
+    applied = config.resolved()
+    return {
+        "profile": applied.profile,
+        "enabled": applied.enabled,
+        "safe_mode": applied.safe_mode,
+        "deblur": applied.deblur,
+        "edge_refine": applied.edge_refine,
+        "threshold": applied.threshold,
+        "regions": 0,
+        "blur_sigma": None,
+        "deblur_applied": False,
+        "warnings": [],
+    }
+
+
+def _record_clarity(report, analysis, config):
+    """Fold one region's blur analysis into the request-level report."""
+    if report is None:
+        return
+    report["regions"] += 1
+    sigma = analysis["blur_sigma"]
+    if sigma is not None and (report["blur_sigma"] is None or sigma > report["blur_sigma"]):
+        report["blur_sigma"] = sigma
+    applied = config.resolved()
+    if analysis["deblur_eligible"] and applied.enabled and applied.deblur > 0:
+        report["deblur_applied"] = True
+    if analysis["warning"] and analysis["warning"] not in report["warnings"]:
+        report["warnings"].append(analysis["warning"])
+
+
+def _source_clarity_analysis(img):
+    import cv2
+    import numpy as np
+
+    return analyze_clarity(cv2.cvtColor(np.asarray(img.convert("RGB")), cv2.COLOR_RGB2GRAY))
+
+
+def _enhance_receipt_patch_uniform(patch, scale_factor, config=None, blur_sigma=None):
+    """Clarify receipt text in one upscaled patch without growing the ink.
+
+    Operates on luminance only, so blue headers, green badges and red debits
+    keep their original chroma.  The text_clarity pipeline runs in a fixed
+    order (edge-aware denoise, restrained Wiener deblur, gated local contrast,
+    half-level edge refinement) and every output pixel stays inside the local
+    value range of the input, so there are no halos and stroke width and
+    character counters are preserved.
     """
     import cv2
     import numpy as np
 
+    config = config or make_config()
     patch_rgb = np.asarray(patch.convert("RGB"))
     ycbcr = cv2.cvtColor(patch_rgb, cv2.COLOR_RGB2YCrCb)
-    y = ycbcr[:, :, 0].astype(np.float32)
-
-    kernel_size = max(9, int(7 * scale_factor)) | 1
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_size, kernel_size))
-    bg = cv2.morphologyEx(y, cv2.MORPH_CLOSE, kernel)
-
-    diff = bg - y
-    max_diff = np.maximum(bg, 1.0)
-    ink = np.clip(diff / max_diff, 0.0, 1.0)
-
-    # Noise cutoff: suppress subtle paper texture or JPEG compression specks
-    noise_cutoff = 0.06
-    ink_clean = np.where(ink < noise_cutoff, 0.0, (ink - noise_cutoff) / (1.0 - noise_cutoff))
-
-    # Power curve for uniform stroke weight: ensures faint loops and stems match
-    ink_boosted = np.clip(np.power(ink_clean, 0.75) * 1.35, 0.0, 1.0)
-
-    y_enhanced = np.clip(bg * (1.0 - ink_boosted), 0, 255).astype(np.uint8)
-
-    # Edge-preserving filter removes compression noise without blurring strokes
-    y_smooth = cv2.bilateralFilter(y_enhanced, d=3, sigmaColor=18, sigmaSpace=18)
-
-    ycbcr[:, :, 0] = y_smooth
+    luma = enhance_luma(ycbcr[:, :, 0], scale_factor, blur_sigma, config)
+    ycbcr[:, :, 0] = np.clip(luma + 0.5, 0, 255).astype(np.uint8)
     return Image.fromarray(cv2.cvtColor(ycbcr, cv2.COLOR_YCrCb2RGB))
 
 
-def _clarify_text_ink_selective(img, scale_factor):
-    """Clarify text strokes selectively without altering background or wallpaper."""
+
+def _crisp_text_edges(img, scale_factor, steepness=6.0):
+    """Steepen text edges about the local half level (no thickening, no halos)."""
     import cv2
     import numpy as np
 
-    ycbcr = img.convert("YCbCr")
-    y, cb, cr = ycbcr.split()
-    y_arr = np.asarray(y).astype(np.float32)
-
-    k_size = max(9, int(6 * scale_factor)) | 1
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k_size, k_size))
-    bg = cv2.morphologyEx(y_arr, cv2.MORPH_CLOSE, kernel)
-
-    diff = bg - y_arr
-    rel_diff = np.clip(diff / np.maximum(bg, 1.0), 0.0, 1.0)
-
-    threshold = 0.11
-    text_mask = rel_diff > threshold
-
-    ink_norm = np.clip((rel_diff - threshold) / (1.0 - threshold), 0.0, 1.0)
-    ink_boosted = np.clip(np.power(ink_norm, 0.75) * 1.35, 0.0, 1.0)
-
-    y_clarified = bg * (1.0 - (threshold + ink_boosted * (1.0 - threshold)))
-    y_out = np.where(text_mask, y_clarified, y_arr)
-
-    y_smooth = cv2.bilateralFilter(np.clip(y_out, 0, 255).astype(np.uint8), d=3, sigmaColor=15, sigmaSpace=15)
-    return Image.merge("YCbCr", (Image.fromarray(y_smooth), cb, cr)).convert("RGB")
+    ycc = cv2.cvtColor(np.asarray(img.convert("RGB")), cv2.COLOR_RGB2YCrCb)
+    y = refine_edges(ycc[..., 0].astype(np.float32), scale_factor, 1.0, steepness)
+    ycc[..., 0] = np.clip(y + 0.5, 0, 255).astype(np.uint8)
+    return Image.fromarray(cv2.cvtColor(ycc, cv2.COLOR_YCrCb2RGB))
 
 
-def _sharpen_receipt_values(resized, source, scale_factor):
-    """Sharpen receipt content and values only; preserve the full screenshot around it."""
+def _clarify_text_ink_selective(img, scale_factor, config=None, blur_sigma=None):
+    """Clarify text strokes selectively without altering background or wallpaper.
+
+    Only pixels with real ink/paper contrast are modified (low-contrast
+    wallpaper is gated out), and results never leave the input's local value
+    range, so strokes are not thickened and counters are not filled.
+    """
     import numpy as np
+
+    config = config or make_config()
+    y, cb, cr = img.convert("YCbCr").split()
+    luma = enhance_luma(np.asarray(y), scale_factor, blur_sigma, config)
+    y_out = Image.fromarray(np.clip(luma + 0.5, 0, 255).astype(np.uint8))
+    return Image.merge("YCbCr", (y_out, cb, cr)).convert("RGB")
+
+def _sharpen_receipt_values(resized, source, scale_factor, config=None, report=None):
+    """Clarify receipt text only; the rest of the screenshot is left untouched.
+
+    Regions come from the existing receipt detectors.  Blur is measured on the
+    *source* crop of each region so deconvolution is only used where a blur is
+    actually present.
+    """
+    import cv2
+    import numpy as np
+
+    config = config or make_config()
+    if not config.enabled:
+        return resized
 
     regions = _find_all_receipt_regions(source)
     new_w, new_h = resized.size
@@ -449,7 +497,11 @@ def _sharpen_receipt_values(resized, source, scale_factor):
             if bx1 - bx0 >= 10 and by1 - by0 >= 10:
                 crop_box = (bx0, by0, bx1, by1)
                 patch = resized.crop(crop_box)
-                crisp = _enhance_receipt_patch_uniform(patch, scale_factor)
+                analysis = analyze_clarity(
+                    cv2.cvtColor(np.asarray(source.crop((x0, y0, x1, y1)).convert("RGB")), cv2.COLOR_RGB2GRAY)
+                )
+                _record_clarity(report, analysis, config)
+                crisp = _enhance_receipt_patch_uniform(patch, scale_factor, config, analysis["blur_sigma"])
 
                 pw, ph = crisp.size
                 feather = min(4, pw // 8, ph // 8)
@@ -473,7 +525,9 @@ def _sharpen_receipt_values(resized, source, scale_factor):
                     resized.paste(crisp, crop_box[:2])
         return resized
     else:
-        return _clarify_text_ink_selective(resized, scale_factor)
+        analysis = _source_clarity_analysis(source)
+        _record_clarity(report, analysis, config)
+        return _clarify_text_ink_selective(resized, scale_factor, config, analysis["blur_sigma"])
 
 
 def _find_receipt_value_cells(img):
@@ -634,10 +688,10 @@ def _upscale_ycbcr_split(img, new_w, new_h):
     return Image.merge("YCbCr", (y_up, cb_up, cr_up))
 
 
-def _sharpen_text_aggressive(ycbcr_img, scale_factor, strength="high"):
-    """Clarify text using selective ink enhancement — no background alteration or halos."""
+def _sharpen_text_aggressive(ycbcr_img, scale_factor, strength="high", config=None, blur_sigma=None):
+    """Compatibility wrapper; clarity is selective and bounded, never aggressive."""
     rgb = ycbcr_img.convert("RGB")
-    return _clarify_text_ink_selective(rgb, scale_factor)
+    return _clarify_text_ink_selective(rgb, scale_factor, config, blur_sigma)
 
 
 def _remove_phone_system_bars(img):
@@ -665,18 +719,26 @@ def _remove_phone_system_bars(img):
     return img.crop((0, top, width, height - nav_height))
 
 
-def enhance_image(img, scale_factor=3, dpi=300, mode="auto"):
+def enhance_image(img, scale_factor=3, dpi=300, mode="auto", clarity=None):
     """
     Multi-stage enhancement pipeline supporting WhatsApp screenshots,
     scanned documents, PDFs, and standard screen captures.
 
-    Every text-bearing mode now:
+    Text-bearing modes share one character-clarity pipeline (text_clarity):
       1. Denoises the source (bilateral filter) before upscaling.
       2. Upscales with a YCbCr colour-split so chrominance edges stay
          sharp and never bleed colours into adjacent text.
-      3. Applies aggressive multi-pass luminance-only sharpening so
-         every character is crisp enough to read on a printed page.
+      3. Clarifies luminance only: restrained Wiener deblur (when a blur is
+         measured), gated local contrast and half-level edge refinement.
+
+    `clarity` is an optional ClarityConfig; by default the profile follows the
+    mode (natural colour, crisp text, or black-and-white print).  Nothing is
+    recognised or redrawn.
     """
+    import numpy as np
+
+    clarity = clarity or make_config(_clarity_profile_for_mode(mode))
+    report = _new_clarity_report(clarity)
     # Clean conversion from RGBA/Palette/Transparencies to RGB
     if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
         background = Image.new("RGB", img.size, (255, 255, 255))
@@ -687,8 +749,6 @@ def enhance_image(img, scale_factor=3, dpi=300, mode="auto"):
         img = background
     elif img.mode != "RGB":
         img = img.convert("RGB")
-
-    img = _remove_phone_system_bars(img)
 
     orig_w, orig_h = img.size
     new_w, new_h = orig_w * scale_factor, orig_h * scale_factor
@@ -706,31 +766,30 @@ def enhance_image(img, scale_factor=3, dpi=300, mode="auto"):
         )
 
     elif mode == "print_text":
-        # Maximum text legibility for printing: convert chat/document text to
-        # solid black and white.  Denoise first so JPEG blocks don't become
-        # random black specks after thresholding.
+        # High-contrast black and white for printing.  The source is lightly
+        # denoised so JPEG blocks do not turn into specks, then the shared
+        # clarity pipeline refines edges and a local (Bernsen) threshold
+        # separates ink from paper.  No global cutoff, giant unsharp radius or
+        # contrast boost, so strokes keep their real thickness and counters.
         clean = _denoise_source(img)
+        analysis = _source_clarity_analysis(img)
+        _record_clarity(report, analysis, clarity)
         resized = clean.resize((new_w, new_h), Image.Resampling.LANCZOS)
-        text_layer = ImageOps.grayscale(resized)
-        text_layer = ImageOps.autocontrast(text_layer, cutoff=1.0)
-        text_layer = text_layer.filter(ImageFilter.UnsharpMask(
-            radius=1.5 * scale_factor, percent=250, threshold=1,
-        ))
-        text_layer = ImageEnhance.Contrast(text_layer).enhance(2.0)
-        final_img = text_layer.point(lambda px: 255 if px >= 140 else 0).convert("RGB")
+        luma = np.asarray(ImageOps.grayscale(resized)).astype(np.float32)
+        luma = enhance_luma(luma, scale_factor, analysis["blur_sigma"], clarity)
+        final_img = Image.fromarray(np.clip(luma, 0, 255).astype(np.uint8)).convert("RGB")
 
     else:
         # Clean upscale preserves 100% natural colors, wallpaper, and background.
         clean = _denoise_source(img)
-        resized_rgb = clean.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        resized_rgb = _upscale_ycbcr_split(clean, new_w, new_h).convert("RGB")
 
 
         if mode in ("auto", "chat", "receipt_chat", "receipt_print", "receipt_values"):
             # Target receipts and text values specifically!
             # The WhatsApp wallpaper and surrounding screenshot stay 100% natural,
-            # clean, and authentic — zero fake darkening, zero noise amplification.
-            # Only receipt values and text are sharpened for razor-sharp print legibility.
-            final_img = _sharpen_receipt_values(resized_rgb, img, scale_factor)
+            # clean, and authentic; only detected receipt regions are clarified.
+            final_img = _sharpen_receipt_values(resized_rgb, img, scale_factor, clarity, report)
 
         elif mode == "ai_receipt_values":
             resized_rgb = _ai_sharpen_receipt_values(resized_rgb, img, scale_factor)
@@ -738,10 +797,17 @@ def enhance_image(img, scale_factor=3, dpi=300, mode="auto"):
 
         elif mode == "general":
             # General screenshot / photo: selective text clarity without background alteration
-            final_img = _clarify_text_ink_selective(resized_rgb, scale_factor)
+            if clarity.enabled:
+                analysis = _source_clarity_analysis(img)
+                _record_clarity(report, analysis, clarity)
+                final_img = _clarify_text_ink_selective(
+                    resized_rgb, scale_factor, clarity, analysis["blur_sigma"]
+                )
+            else:
+                final_img = resized_rgb
 
         else:
-            final_img = _sharpen_receipt_values(resized_rgb, img, scale_factor)
+            final_img = _sharpen_receipt_values(resized_rgb, img, scale_factor, clarity, report)
 
     # Preserve the physical size of the source at the requested print density.
     # Example: a 1080px source for 300 PPI is a 3.6in print; after 3x
@@ -764,6 +830,7 @@ def enhance_image(img, scale_factor=3, dpi=300, mode="auto"):
         "source_dpi": dpi,
         "print_width_inches": round(orig_w / dpi, 2),
         "print_height_inches": round(orig_h / dpi, 2),
+        "clarity": report,
     }
 
 @app.route('/')
@@ -825,6 +892,12 @@ def enhanced_image_to_pdf(image_bytes):
     return pdf.getvalue()
 
 
+def _optional_fraction(name):
+    """Read an optional 0..1 form value; blank or missing means 'use the profile default'."""
+    raw = request.form.get(name, "")
+    return float(raw) if raw.strip() else None
+
+
 @app.route("/api/process", methods=["POST"])
 def process_file():
     if "file" not in request.files:
@@ -832,9 +905,23 @@ def process_file():
 
     file = request.files["file"]
     filename = file.filename or "file"
-    scale = int(request.form.get("scale", 3))
-    dpi = int(request.form.get("dpi", 300))
-    mode = request.form.get("mode", "chat")
+    try:
+        scale = int(request.form.get("scale", 2))
+        dpi = int(request.form.get("dpi", 300))
+        denoise = float(request.form.get("denoise", 0))
+        contrast = float(request.form.get("contrast", 0))
+        brightness = float(request.form.get("brightness", 0))
+        sharpen = float(request.form.get("sharpen", 0.35))
+        sharpen_sigma = float(request.form.get("sharpen_sigma", 1))
+        deblur = _optional_fraction("deblur")
+        edge_refine = _optional_fraction("edge_refine")
+        text_threshold = _optional_fraction("text_threshold")
+    except (TypeError, ValueError) as error:
+        return jsonify({"error": "Enhancement settings contain an invalid number."}), 400
+    mode = request.form.get("mode", "standard")
+    interpolation = request.form.get("interpolation", "lanczos")
+    clarity_off = request.form.get("clarity", "on").lower() == "off"
+    safe_mode = request.form.get("safe_mode", "true").lower() != "false"
 
     if scale not in (1, 2, 3, 4, 6):
         return jsonify({"error": "Scale must be 1x, 2x, 3x, 4x, or 6x."}), 400
@@ -851,6 +938,8 @@ def process_file():
         "ai_reconstruction",
         "ai_receipt_values",
         "receipt_print",
+        "standard",
+        "text_focused",
     ):
         return jsonify({"error": "Unknown enhancement profile."}), 400
     if mode in ("ai_reconstruction", "ai_receipt_values"):
@@ -865,6 +954,18 @@ def process_file():
 
     file_bytes = file.read()
     results = []
+
+    try:
+        clarity = make_config(
+            _clarity_profile_for_mode(mode),
+            deblur=deblur,
+            edge_refine=edge_refine,
+            threshold=text_threshold,
+            enabled=not clarity_off,
+            safe_mode=safe_mode,
+        )
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
 
     try:
         # PDF Rendering
@@ -883,20 +984,77 @@ def process_file():
                     scale_factor=pdf_scale,
                     dpi=dpi,
                     mode=mode,
+                    clarity=clarity,
                 )
                 base_name = filename.rsplit(".", 1)[0]
                 processed["filename"] = f"{base_name}_page_{idx + 1}_HD.png"
                 results.append(processed)
         else:
             # Universal Image Handling (PNG, JPG, JPEG, WEBP, BMP, TIFF, GIF)
-            img = Image.open(io.BytesIO(file_bytes))
-            processed = enhance_image(img, scale_factor=scale, dpi=dpi, mode=mode)
+            img = load_image(file_bytes)
+            if mode in ("standard", "text_focused"):
+                settings = EnhancementSettings(
+                    scale=scale if scale != 6 else 4,
+                    interpolation=interpolation,
+                    denoise=denoise,
+                    contrast=contrast,
+                    brightness=brightness,
+                    sharpen=sharpen,
+                    sharpen_sigma=sharpen_sigma,
+                    text_focus=mode == "text_focused",
+                    threshold_variant=request.form.get("threshold", "false").lower() == "true",
+                )
+                settings.validate()
+                try:
+                    enhanced, threshold = process_image(img, settings)
+                except ValueError as error:
+                    if "too much memory" in str(error):
+                        requested_width = img.width * settings.scale
+                        requested_height = img.height * settings.scale
+                        raise ValueError(
+                            f"{error} Requested output: {requested_width}x{requested_height} "
+                            f"({requested_width * requested_height:,} pixels). "
+                            "Choose a lower scale, usually 2x for phone screenshots."
+                        ) from error
+                    raise
+                report = _new_clarity_report(clarity)
+                if mode in ("standard", "text_focused"):
+                    # Reuse the existing receipt detector for table/card
+                    # regions. It only changes luminance inside detected
+                    # regions and never redraws or OCR-replaces their values.
+                    enhanced = _sharpen_receipt_values(enhanced, img, settings.scale, clarity, report)
+                if threshold is not None and settings.threshold_variant:
+                    # The checkbox requests a monochrome primary result, not
+                    # only an additional optional download.
+                    enhanced = threshold
+                encoded = encode_png(enhanced, dpi)
+                processed = {
+                    "data_url": f"data:image/png;base64,{base64.b64encode(encoded).decode('ascii')}",
+                    "width": enhanced.width,
+                    "height": enhanced.height,
+                    "orig_width": img.width,
+                    "orig_height": img.height,
+                    "dpi": dpi,
+                    "source_dpi": dpi,
+                    "print_width_inches": round(img.width / dpi, 2),
+                    "print_height_inches": round(img.height / dpi, 2),
+                    "clarity": report,
+                }
+                if threshold is not None:
+                    threshold_bytes = encode_png(threshold, dpi)
+                    processed["threshold_data_url"] = (
+                        f"data:image/png;base64,{base64.b64encode(threshold_bytes).decode('ascii')}"
+                    )
+            else:
+                processed = enhance_image(img, scale_factor=scale, dpi=dpi, mode=mode, clarity=clarity)
             base_name = filename.rsplit(".", 1)[0]
             processed["filename"] = f"{base_name}_HD.png"
             results.append(processed)
 
         return jsonify({"success": True, "items": results})
 
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

@@ -668,7 +668,9 @@
         <label for="modeSelect">Enhancement Profile</label>
         <div class="select-wrapper">
           <select id="modeSelect">
-            <option value="auto" selected>📸 Screenshot Auto-Enhance (Recommended)</option>
+            <option value="standard" selected>✨ Standard Enhancement (Recommended)</option>
+            <option value="auto">📸 Screenshot Auto-Enhance (Legacy Receipt Profile)</option>
+            <option value="text_focused">🔎 Text-Focused Enhancement (Natural Colors)</option>
             <option value="chat">💬 WhatsApp &amp; Chat Screenshot</option>
             <option value="receipt_chat">🧾 Receipt / Table in Chat</option>
             <option value="receipt_print">🧾 Receipt Detail (Original Colors)</option>
@@ -684,8 +686,9 @@
         <label for="scaleSelect">Upscale Multiplier</label>
         <div class="select-wrapper">
           <select id="scaleSelect">
-            <option value="2">2x Resolution</option>
-            <option value="3" selected>3x Resolution (Recommended for Chat)</option>
+            <option value="1">1x Original size (clarity only)</option>
+            <option value="2" selected>2x Resolution (Recommended)</option>
+            <option value="3">3x Resolution (Large screenshots)</option>
             <option value="4">4x Ultra HD Resolution</option>
             <option value="6">6x Extra-large export</option>
           </select>
@@ -699,6 +702,100 @@
             <option value="600">600 DPI (High-Density Fine Print)</option>
           </select>
         </div>
+      </div>
+      <div class="control-group">
+        <label for="interpolationSelect">Upscale Method</label>
+        <div class="select-wrapper">
+          <select id="interpolationSelect">
+            <option value="lanczos" selected>Lanczos (Recommended)</option>
+            <option value="cubic">Cubic</option>
+            <option value="linear">Linear</option>
+          </select>
+        </div>
+      </div>
+      <div class="control-group">
+        <label for="denoiseSelect">Denoising</label>
+        <div class="select-wrapper">
+          <select id="denoiseSelect">
+            <option value="0" selected>Off (Clean screenshots)</option>
+            <option value="2">Low</option>
+            <option value="5">Medium</option>
+            <option value="8">High (noisy images)</option>
+          </select>
+        </div>
+      </div>
+      <div class="control-group">
+        <label for="sharpenSelect">Sharpening</label>
+        <div class="select-wrapper">
+          <select id="sharpenSelect">
+            <option value="0">Off</option>
+            <option value="0.35" selected>Moderate</option>
+            <option value="0.7">Strong</option>
+          </select>
+        </div>
+      </div>
+      <div class="control-group">
+        <label for="contrastSelect">Contrast</label>
+        <div class="select-wrapper">
+          <select id="contrastSelect">
+            <option value="0" selected>Natural</option>
+            <option value="0.25">Slightly higher</option>
+            <option value="0.5">Higher</option>
+          </select>
+        </div>
+      </div>
+      <div class="control-group">
+        <label for="brightnessSelect">Brightness</label>
+        <div class="select-wrapper">
+          <select id="brightnessSelect">
+            <option value="0" selected>Natural</option>
+            <option value="0.1">Slightly brighter</option>
+            <option value="-0.1">Slightly darker</option>
+          </select>
+        </div>
+      </div>
+      <div class="control-group">
+        <label><input type="checkbox" id="thresholdSelect"> Make enhanced output black &amp; white</label>
+      </div>
+      <div class="control-group">
+        <label for="deblurSelect">Deblur strength</label>
+        <div class="select-wrapper">
+          <select id="deblurSelect">
+            <option value="" selected>Profile default (safe)</option>
+            <option value="0">Off</option>
+            <option value="0.25">Gentle</option>
+            <option value="0.5">Moderate</option>
+            <option value="0.8">Strong (needs Safe mode off)</option>
+          </select>
+        </div>
+      </div>
+      <div class="control-group">
+        <label for="edgeRefineSelect">Edge refinement</label>
+        <div class="select-wrapper">
+          <select id="edgeRefineSelect">
+            <option value="" selected>Profile default (safe)</option>
+            <option value="0">Off</option>
+            <option value="0.3">Gentle</option>
+            <option value="0.6">Moderate</option>
+            <option value="0.9">Strong (needs Safe mode off)</option>
+          </select>
+        </div>
+      </div>
+      <div class="control-group">
+        <label for="textThresholdSelect">Ink/paper thresholding</label>
+        <div class="select-wrapper">
+          <select id="textThresholdSelect">
+            <option value="" selected>Profile default (safe)</option>
+            <option value="0">Off</option>
+            <option value="0.25">Gentle</option>
+            <option value="0.5">Moderate</option>
+            <option value="0.8">Strong (needs Safe mode off)</option>
+          </select>
+        </div>
+      </div>
+      <div class="control-group">
+        <label><input type="checkbox" id="safeModeSelect" checked> Safe mode (cap aggressive processing)</label>
+        <label><input type="checkbox" id="clarityOffSelect"> Disable text clarity processing (plain upscale)</label>
       </div>
     </div>
 
@@ -795,6 +892,12 @@
       const mode = modeSelect.value;
       const scale = document.getElementById('scaleSelect').value;
       const dpi = document.getElementById('dpiSelect').value;
+      const interpolation = document.getElementById('interpolationSelect').value;
+      const denoise = document.getElementById('denoiseSelect').value;
+      const sharpen = document.getElementById('sharpenSelect').value;
+      const contrast = document.getElementById('contrastSelect').value;
+      const brightness = document.getElementById('brightnessSelect').value;
+      const threshold = document.getElementById('thresholdSelect').checked;
 
       // Use a few workers at once so a batch uses available CPU cores without
       // creating too many large upscaled images in memory.
@@ -815,12 +918,26 @@
           formData.append('mode', mode);
           formData.append('scale', scale);
           formData.append('dpi', dpi);
-
+          formData.append('interpolation', interpolation);
+          formData.append('denoise', denoise);
+          formData.append('sharpen', sharpen);
+          formData.append('contrast', contrast);
+          formData.append('brightness', brightness);
+          formData.append('threshold', threshold ? 'true' : 'false');
+          [['deblur', 'deblurSelect'], ['edge_refine', 'edgeRefineSelect'], ['text_threshold', 'textThresholdSelect']]
+            .forEach(([key, id]) => {
+              const value = document.getElementById(id).value;
+              if (value !== '') formData.append(key, value);
+            });
+          formData.append('safe_mode', document.getElementById('safeModeSelect').checked ? 'true' : 'false');
+          formData.append('clarity', document.getElementById('clarityOffSelect').checked ? 'off' : 'on');
+          const originalUrl = file.type && file.type.startsWith('image/') ? URL.createObjectURL(file) : null;
           try {
             const res = await fetch('/api/process', { method: 'POST', body: formData });
             const data = await res.json();
             if (!data.success) throw new Error(data.error || 'Unknown error');
             data.items.forEach(item => {
+              item.original_url = originalUrl;
               processedResults.push(item);
               renderCard(item, processedResults.length - 1);
             });
@@ -844,6 +961,21 @@
     function renderCard(item, index) {
       const gallery = document.getElementById('gallery');
       const card = document.createElement('div');
+      const thresholdButton = item.threshold_data_url
+        ? `<button class="action-btn action-btn-png" onclick="downloadThreshold(${index})">B&amp;W Variant</button>`
+        : '';
+      const warnings = (item.clarity && item.clarity.warnings) || [];
+      const warningHtml = warnings.map(w => `<div class="warning-note"><strong>Note:</strong> ${w}</div>`).join('');
+      const compareHtml = item.original_url ? `
+          <div class="card-meta">
+            <button class="action-btn action-btn-png" onclick="toggleOriginal(${index}, this)">Show original</button>
+            <button class="action-btn action-btn-png" onclick="toggleZoom(${index}, this)">Zoom before/after</button>
+          </div>
+          <div class="zoom-compare" id="zoom-${index}" style="display:none">
+            <canvas class="zoom-before" width="240" height="160" style="image-rendering:pixelated;width:48%"></canvas>
+            <canvas class="zoom-after" width="240" height="160" style="image-rendering:pixelated;width:48%"></canvas>
+            <div class="card-meta">Left: original. Right: enhanced. Click the card image to choose the crop position.</div>
+          </div>` : '';
       card.className = 'card';
       card.innerHTML = `
         <div class="card-preview-wrapper" onclick="window.open('${item.data_url}', '_blank')">
@@ -851,6 +983,8 @@
           <div class="preview-badge">Click to enlarge</div>
         </div>
         <div class="card-body">
+          ${warningHtml}
+          ${compareHtml}
           <div>
             <div class="card-title" title="${item.filename}">${item.filename}</div>
             <div class="card-meta">
@@ -871,10 +1005,73 @@
               </svg>
               Download PNG
             </button>
+            ${thresholdButton}
           </div>
         </div>
       `;
       gallery.appendChild(card);
+    }
+
+    function drawZoom(index, fx, fy) {
+      const item = processedResults[index];
+      const box = document.getElementById(`zoom-${index}`);
+      if (!item || !box) return;
+      const [before, after] = box.querySelectorAll('canvas');
+      const a = new Image();
+      const b = new Image();
+      let loaded = 0;
+      const paint = () => {
+        if (++loaded < 2) return;
+        // Same fractional region from both images, so the crops line up at any scale.
+        const regionW = Math.max(8, Math.round(a.naturalWidth * 0.12));
+        const regionH = Math.round(regionW * before.height / before.width);
+        const sx = Math.min(Math.max(0, Math.round(fx * a.naturalWidth - regionW / 2)), Math.max(0, a.naturalWidth - regionW));
+        const sy = Math.min(Math.max(0, Math.round(fy * a.naturalHeight - regionH / 2)), Math.max(0, a.naturalHeight - regionH));
+        const k = b.naturalWidth / a.naturalWidth;
+        [[before, a, 1], [after, b, k]].forEach(([canvas, img, f]) => {
+          const ctx = canvas.getContext('2d');
+          ctx.imageSmoothingEnabled = false;
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(img, sx * f, sy * f, regionW * f, regionH * f, 0, 0, canvas.width, canvas.height);
+        });
+      };
+      a.onload = paint;
+      b.onload = paint;
+      a.src = item.original_url;
+      b.src = item.data_url;
+    }
+
+    function toggleZoom(index, button) {
+      const box = document.getElementById(`zoom-${index}`);
+      const show = box.style.display === 'none';
+      box.style.display = show ? 'block' : 'none';
+      button.textContent = show ? 'Hide zoom' : 'Zoom before/after';
+      if (show) {
+        drawZoom(index, 0.5, 0.5);
+        const img = box.closest('.card').querySelector('.card-preview-wrapper img');
+        img.onclick = ev => {
+          if (box.style.display === 'none') return;
+          ev.stopPropagation();
+          const r = img.getBoundingClientRect();
+          drawZoom(index, (ev.clientX - r.left) / r.width, (ev.clientY - r.top) / r.height);
+        };
+      }
+    }
+
+    function toggleOriginal(index, button) {
+      const item = processedResults[index];
+      const img = button.closest('.card').querySelector('.card-preview-wrapper img');
+      const showingOriginal = img.dataset.showing === 'original';
+      img.src = showingOriginal ? item.data_url : item.original_url;
+      img.dataset.showing = showingOriginal ? 'enhanced' : 'original';
+      button.textContent = showingOriginal ? 'Show original' : 'Show enhanced';
+    }
+
+    async function downloadThreshold(index) {
+      const item = processedResults[index];
+      if (item && item.threshold_data_url) {
+        await saveDataUrl(item.filename.replace(/\.png$/i, '_text.png'), item.threshold_data_url);
+      }
     }
 
     async function downloadItemPng(index) {
