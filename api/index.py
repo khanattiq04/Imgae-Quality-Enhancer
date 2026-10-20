@@ -21,9 +21,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from image_processor import EnhancementSettings, encode_png, load_image, process_image
+import ai_redraw
+import text_redraw
 from text_clarity import (
     ClarityConfig,
     analyze_clarity,
+    crisp_ink,
     enhance_luma,
     make_config,
     refine_edges,
@@ -394,6 +397,7 @@ def _new_clarity_report(config):
         "deblur": applied.deblur,
         "edge_refine": applied.edge_refine,
         "threshold": applied.threshold,
+        "ink_crisp": applied.ink_crisp,
         "regions": 0,
         "blur_sigma": None,
         "deblur_applied": False,
@@ -441,7 +445,12 @@ def _enhance_receipt_patch_uniform(patch, scale_factor, config=None, blur_sigma=
     ycbcr = cv2.cvtColor(patch_rgb, cv2.COLOR_RGB2YCrCb)
     luma = enhance_luma(ycbcr[:, :, 0], scale_factor, blur_sigma, config)
     ycbcr[:, :, 0] = np.clip(luma + 0.5, 0, 255).astype(np.uint8)
-    return Image.fromarray(cv2.cvtColor(ycbcr, cv2.COLOR_YCrCb2RGB))
+    rgb = cv2.cvtColor(ycbcr, cv2.COLOR_YCrCb2RGB)
+    applied = config.resolved()
+    if applied.enabled and not applied.binarize and applied.ink_crisp > 0:
+        # Trim blur spread and give each stroke sharp, solid edges.
+        rgb = crisp_ink(rgb, scale_factor, applied.ink_crisp)
+    return Image.fromarray(rgb)
 
 
 
@@ -530,14 +539,24 @@ def _sharpen_receipt_values(resized, source, scale_factor, config=None, report=N
         return _clarify_text_ink_selective(resized, scale_factor, config, analysis["blur_sigma"])
 
 
-def _find_receipt_value_cells(img):
-    """Find data-row value cells, excluding table headings and description columns."""
+def _receipt_table_grids(img):
+    """Column and row bounds of each receipt table (row 0 is the column titles).
+
+    The line-based finder works at any screenshot size and colour scheme;
+    the older finder (which needs the blue TO: bar) is the fallback.
+    """
+    grids = text_redraw.find_table_grids(img)
+    return grids or _receipt_table_grids_blue_bar(img)
+
+
+def _receipt_table_grids_blue_bar(img):
+    """Column and row bounds found below the receipt's blue TO: bar."""
     import cv2
     import numpy as np
 
     rgb = np.asarray(img.convert("RGB"))
     gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
-    cells = []
+    grids = []
 
     for x0, y0, x1, y1 in _find_receipt_value_regions(img):
         table = gray[y0:y1, x0:x1]
@@ -581,20 +600,29 @@ def _find_receipt_value_cells(img):
             y_bounds[0] = y0
         if table_h - row_lines[-1][1] < table_h * 0.03:
             y_bounds[-1] = y1
-        column_count = len(x_bounds) - 1
-        first_value_column = 3 if column_count >= 7 else 2
+        grids.append({
+            "columns": [(x_bounds[i], x_bounds[i + 1]) for i in range(len(x_bounds) - 1)],
+            "rows": [(y_bounds[i], y_bounds[i + 1]) for i in range(len(y_bounds) - 1)],
+        })
+    return grids
 
-        for row_index in range(1, len(y_bounds) - 1):
-            for column_index in range(first_value_column, column_count):
-                cell = (
-                    x_bounds[column_index] + 3,
-                    y_bounds[row_index] + 3,
-                    x_bounds[column_index + 1] - 3,
-                    y_bounds[row_index + 1] - 3,
-                )
+
+def _find_receipt_value_cells(img, all_columns=False):
+    """Find data-row value cells, excluding table headings and description columns.
+
+    `all_columns` also returns the serial-number and description columns
+    (used by the OCR redraw, which reads every data cell).
+    """
+    cells = []
+    for grid in _receipt_table_grids(img):
+        columns, rows = grid["columns"], grid["rows"]
+        column_count = len(columns)
+        first_value_column = 0 if all_columns else (3 if column_count >= 7 else 2)
+        for top, bottom in rows[1:]:
+            for left, right in columns[first_value_column:]:
+                cell = (left + 3, top + 3, right - 3, bottom - 3)
                 if cell[2] - cell[0] >= 6 and cell[3] - cell[1] >= 6:
                     cells.append(cell)
-
     return cells
 
 
@@ -916,6 +944,7 @@ def process_file():
         deblur = _optional_fraction("deblur")
         edge_refine = _optional_fraction("edge_refine")
         text_threshold = _optional_fraction("text_threshold")
+        ink_crisp = _optional_fraction("ink_crisp")
     except (TypeError, ValueError) as error:
         return jsonify({"error": "Enhancement settings contain an invalid number."}), 400
     mode = request.form.get("mode", "standard")
@@ -961,6 +990,7 @@ def process_file():
             deblur=deblur,
             edge_refine=edge_refine,
             threshold=text_threshold,
+            ink_crisp=ink_crisp,
             enabled=not clarity_off,
             safe_mode=safe_mode,
         )
@@ -1110,6 +1140,211 @@ def create_pdf():
         )
     except (ValueError, TypeError, binascii.Error, OSError) as error:
         return jsonify({"error": f"Could not create PDF: {error}"}), 400
+
+def _is_local_request():
+    return urlparse(request.host_url).hostname in ("localhost", "127.0.0.1", "::1")
+
+
+def _source_image_from_request():
+    """Load the uploaded screenshot (images only) as an RGB PIL image."""
+    if "file" not in request.files:
+        raise ValueError("No file uploaded.")
+    upload = request.files["file"]
+    if (upload.filename or "").lower().endswith(".pdf") or upload.content_type == "application/pdf":
+        raise ValueError("Value redraw works on screenshots (images), not PDFs.")
+    img = load_image(upload.read())
+    if img.mode != "RGB":
+        background = Image.new("RGB", img.size, (255, 255, 255))
+        if "A" in img.getbands():
+            background.paste(img.convert("RGBA"), mask=img.convert("RGBA").split()[3])
+        else:
+            background.paste(img.convert("RGB"))
+        img = background
+    return img
+
+
+@app.route("/api/ocr/detect", methods=["POST"])
+def ocr_detect():
+    """Read the values in a screenshot's receipt so the user can confirm them."""
+    if not text_redraw.ocr_available():
+        return jsonify({"error": "OCR is not installed. Run: pip install -r requirements-desktop.txt"}), 400
+    try:
+        img = _source_image_from_request()
+        regions = _find_all_receipt_regions(img)
+        cells = _find_receipt_value_cells(img, all_columns=True)
+        tables = _find_receipt_value_regions(img)
+        items = text_redraw.detect_values(img, regions, cells, tables)
+    except (ValueError, text_redraw.OcrUnavailable) as error:
+        return jsonify({"error": str(error)}), 400
+    return jsonify({"success": True, "items": items, "width": img.width, "height": img.height})
+
+
+@app.route("/api/ocr/redraw", methods=["POST"])
+def ocr_redraw():
+    """Re-typeset the values the user confirmed onto the enhanced image."""
+    payload = request.get_json(silent=True) or {}
+    data_url = payload.get("data_url")
+    items = payload.get("items")
+    try:
+        scale = float(payload.get("scale", 0))
+    except (TypeError, ValueError):
+        scale = 0
+    if not isinstance(data_url, str) or "," not in data_url or not isinstance(items, list) or scale <= 0:
+        return jsonify({"error": "An enhanced image, its scale and the confirmed values are required."}), 400
+    try:
+        enhanced = Image.open(io.BytesIO(base64.b64decode(data_url.split(",", 1)[1], validate=True)))
+        dpi = enhanced.info.get("dpi", (300, 300))
+        result = text_redraw.redraw_values(enhanced, scale, items)
+    except (ValueError, TypeError, KeyError, binascii.Error, OSError) as error:
+        return jsonify({"error": f"Could not redraw values: {error}"}), 400
+    # Values the user typed in become vocabulary, so the next screenshot with
+    # the same site, material or category is read without asking.
+    try:
+        import value_context
+        value_context.learn_values([(it.get("column", ""), it.get("text", ""))
+                                    for it in items if isinstance(it, dict) and it.get("typed")])
+    except Exception:          # learning is a convenience; never fail the redraw for it
+        pass
+    buf = io.BytesIO()
+    result.save(buf, format="PNG", dpi=tuple(int(round(v)) for v in dpi), compress_level=3)
+    redrawn = sum(1 for it in items if it.get("confirmed") and str(it.get("text", "")).strip())
+    return jsonify({
+        "success": True,
+        "data_url": "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii"),
+        "redrawn": redrawn,
+    })
+
+
+@app.route("/api/ocr/auto", methods=["POST"])
+def ocr_auto():
+    """One click: enhance, read the table values, redraw them, return PNG + PDF.
+
+    Only the data rows of the receipt table are redrawn (Sr No, Site Name,
+    Material, Category, rates, charges...); column titles and everything
+    else keep the enhanced pixels.  Values the reader is not reasonably sure
+    of are left enhanced rather than guessed, and are listed in "skipped".
+    """
+    if not text_redraw.ocr_available():
+        return jsonify({"error": "OCR is not installed. Run: pip install -r requirements-desktop.txt"}), 400
+    try:
+        scale = int(request.form.get("scale", 3))
+        dpi = int(request.form.get("dpi", 300))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Scale and DPI must be numbers."}), 400
+    if scale not in (1, 2, 3, 4, 6) or dpi not in (300, 600):
+        return jsonify({"error": "Scale must be 1-6x and DPI 300 or 600."}), 400
+    try:
+        img = _source_image_from_request()
+        grids = _receipt_table_grids(img)
+        items = text_redraw.read_table_values(img, grids) if grids else []
+        note = None
+        if items:
+            enhanced_info = enhance_image(img, scale_factor=scale, dpi=dpi, mode="receipt_chat")
+            enhanced = Image.open(io.BytesIO(base64.b64decode(enhanced_info["data_url"].split(",", 1)[1])))
+            result = text_redraw.redraw_values(enhanced, scale, items)
+        else:
+            # No printed rate table (a handwritten slip, a photo of a bill...):
+            # nothing is re-typed; the whole image gets the text-clarity
+            # enhancement instead, which sharpens handwriting without changing it.
+            enhanced_info = enhance_image(img, scale_factor=scale, dpi=dpi, mode="general")
+            result = Image.open(io.BytesIO(base64.b64decode(enhanced_info["data_url"].split(",", 1)[1])))
+            note = ("No printed receipt table was found (for example a handwritten receipt), "
+                    "so the whole image was sharpened instead and no values were re-typed.")
+    except (ValueError, text_redraw.OcrUnavailable, OSError) as error:
+        return jsonify({"error": str(error)}), 400
+
+    png = io.BytesIO()
+    embedded = dpi * scale
+    result.save(png, format="PNG", dpi=(embedded, embedded), compress_level=3)
+    base_name = (request.files["file"].filename or "receipt").rsplit(".", 1)[0]
+    return jsonify({
+        "success": True,
+        "filename": f"{base_name}_OCR.png",
+        "pdf_filename": f"{base_name}_OCR.pdf",
+        "data_url": "data:image/png;base64," + base64.b64encode(png.getvalue()).decode("ascii"),
+        "width": result.width,
+        "height": result.height,
+        "orig_width": img.width,
+        "orig_height": img.height,
+        "dpi": embedded,
+        "source_dpi": dpi,
+        "print_width_inches": round(img.width / dpi, 2),
+        "print_height_inches": round(img.height / dpi, 2),
+        "redrawn": [{"column": it["column"], "text": it["text"], "evidence": it.get("evidence", "recogniser")}
+                    for it in items if it["confirmed"]],
+        "skipped": [_skipped_item(img, it) for it in items if not it["confirmed"]],
+        "scale": scale,
+        "note": note,
+        # For typing in the unread values: the plain enhancement and every value,
+        # so a fix redraws all of them together at one consistent size.
+        "enhanced_url": enhanced_info["data_url"],
+        "items": [_plain({k: v for k, v in it.items() if k not in ("row",)}) for it in items],
+    })
+
+
+def _plain(value):
+    """JSON-safe copy (numpy numbers and tuples become plain Python)."""
+    if isinstance(value, dict):
+        return {k: _plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(v) for v in value]
+    if hasattr(value, "item"):
+        return value.item()
+    return value
+
+
+def _skipped_item(img, it):
+    """A value the tool could not read surely: everything needed to redraw it once typed."""
+    box = list(it["box"])
+    if it.get("underline"):
+        box = [min(box[0], it["underline"][0]), box[1], max(box[2], it["underline"][2]), it["underline"][3]]
+    keep = ("id", "box", "underline", "ink", "paper", "font", "group", "align", "kind", "column", "text", "confidence")
+    data = _plain({k: it.get(k) for k in keep})
+    # A little of the cell around the value, so the glyph is seen in context.
+    pad = max(2.0, 0.6 * (box[3] - box[1]))
+    context = [box[0] - pad, box[1] - pad, box[2] + pad, box[3] + pad]
+    data["crop_url"] = text_redraw._crop_data_url(img, context, zoom=8)
+    return data
+
+
+@app.route("/api/ai/redraw", methods=["POST"])
+def ai_redraw_route():
+    """Generative redraw (OpenAI image edit) plus an OCR check against the original."""
+    if not _is_local_request():
+        return jsonify({"error": "AI redraw is only available in the desktop app or a local server."}), 400
+    try:
+        img = _source_image_from_request()
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        drawn_bytes = ai_redraw.ai_redraw(
+            buf.getvalue(),
+            api_key=request.form.get("api_key", ""),
+            model=request.form.get("model", "") or None,
+        )
+        drawn = Image.open(io.BytesIO(drawn_bytes)).convert("RGB")
+    except (ValueError, ai_redraw.AiRedrawError) as error:
+        return jsonify({"error": str(error)}), 400
+
+    differences, checked = [], False
+    if text_redraw.ocr_available():
+        try:
+            original_items = text_redraw.read_image(img)
+            drawn_items = text_redraw.read_image(drawn)
+            differences = text_redraw.compare_readings(original_items, drawn_items)
+            checked = True
+        except text_redraw.OcrUnavailable:
+            checked = False
+    out = io.BytesIO()
+    drawn.save(out, format="PNG")
+    return jsonify({
+        "success": True,
+        "data_url": "data:image/png;base64," + base64.b64encode(out.getvalue()).decode("ascii"),
+        "width": drawn.width,
+        "height": drawn.height,
+        "model": ai_redraw.model_name(request.form.get("model", "") or None),
+        "checked": checked,
+        "differences": differences,
+    })
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)

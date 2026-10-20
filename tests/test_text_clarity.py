@@ -11,6 +11,7 @@ from api import index as api
 from text_clarity import (
     ClarityConfig,
     analyze_clarity,
+    crisp_ink,
     edge_profile,
     enhance_luma,
     estimate_blur_sigma,
@@ -201,7 +202,9 @@ class ReceiptPipelineTests(unittest.TestCase):
             with self.subTest(scale=scale):
                 source = self.colored_receipt()
                 patch = source.resize((source.width * scale, source.height * scale), Image.Resampling.LANCZOS)
-                out = api._enhance_receipt_patch_uniform(patch, scale, make_config("crisp"), 1.0)
+                # The luma-only clarity stage; crisp_ink (which recolours
+                # fringes on purpose) is covered by CrispInkTests.
+                out = api._enhance_receipt_patch_uniform(patch, scale, make_config("crisp", ink_crisp=0.0), 1.0)
                 a = cv2.cvtColor(np.asarray(patch), cv2.COLOR_RGB2YCrCb)
                 b = cv2.cvtColor(np.asarray(out), cv2.COLOR_RGB2YCrCb)
                 self.assertLessEqual(int(np.abs(a[..., 1:].astype(int) - b[..., 1:]).max()), 3)
@@ -254,6 +257,90 @@ class ReceiptPipelineTests(unittest.TestCase):
         source = self.colored_receipt()
         result = api.enhance_image(source, scale_factor=2, mode="receipt_print", clarity=make_config(enabled=False))
         self.assertFalse(result["clarity"]["enabled"])
+
+
+class CrispInkTests(unittest.TestCase):
+    """Receipt text must come out thinner and sharper, never bolder or merged."""
+
+    def run_crisp(self, scale, sigma=0.7, rgb_ink=None):
+        ink, source = blurred_source(sigma=sigma)
+        base = upscale(source, scale)
+        if rgb_ink is None:
+            rgb = np.repeat(np.clip(base, 0, 255).astype(np.uint8)[..., None], 3, axis=2)
+        else:
+            alpha = np.clip((PAPER - base) / (PAPER - INK), 0, 1)[..., None]
+            paper = np.array([PAPER] * 3, np.float32)
+            rgb = np.clip(paper + alpha * (np.array(rgb_ink, np.float32) - paper), 0, 255).astype(np.uint8)
+        out = crisp_ink(rgb, scale)
+        return ink, base, rgb, out
+
+    def test_not_further_from_true_glyphs(self):
+        for scale in (2, 3, 4):
+            with self.subTest(scale=scale):
+                ink, base, _, out = self.run_crisp(scale)
+                out_y = cv2.cvtColor(out, cv2.COLOR_RGB2GRAY).astype(np.float32)
+                truth = truth_at(ink, scale)
+                # Mean error is dominated by blur no filter can undo; it must not get worse.
+                self.assertLessEqual(np.abs(out_y - truth).mean(), np.abs(base - truth).mean() + 0.5)
+
+    def test_stroke_edges_get_sharper(self):
+        src = np.full((24, 40), PAPER, np.float32)
+        src[4:20, 14:17] = INK                                  # one 3 px wide stroke
+        src = cv2.GaussianBlur(src, (0, 0), 0.8)
+        for scale in (2, 3, 4):
+            with self.subTest(scale=scale):
+                base = upscale(src, scale)
+                rgb = np.repeat(np.clip(base, 0, 255).astype(np.uint8)[..., None], 3, axis=2)
+                out_y = cv2.cvtColor(crisp_ink(rgb, scale), cv2.COLOR_RGB2GRAY).astype(np.float32)
+                row, x0, x1 = 12 * scale, 6 * scale, 15 * scale + scale // 2  # paper -> stroke centre
+                self.assertLess(
+                    rise_width(edge_profile(out_y, row, x0, x1)),
+                    0.6 * rise_width(edge_profile(base, row, x0, x1)),
+                )
+
+    def test_no_merged_characters_or_closed_counters(self):
+        for scale in (2, 3, 4):
+            with self.subTest(scale=scale):
+                ink, base, _, out = self.run_crisp(scale, sigma=0.5)
+                out_y = cv2.cvtColor(out, cv2.COLOR_RGB2GRAY).astype(np.float32)
+                level = (PAPER + INK) / 2.0
+                before, after = (base < level).astype(np.uint8), (out_y < level).astype(np.uint8)
+                self.assertGreaterEqual(cv2.connectedComponents(after)[0], cv2.connectedComponents(before)[0])
+                from text_clarity import _count_holes
+                self.assertGreaterEqual(_count_holes(after), _count_holes(before))
+
+    def test_coloured_ink_keeps_its_colour_and_no_new_colours(self):
+        scale = 3
+        _, _, rgb, out = self.run_crisp(scale, rgb_ink=(200, 30, 30))
+        a = cv2.cvtColor(rgb, cv2.COLOR_RGB2YCrCb).astype(np.float32)
+        b = cv2.cvtColor(out, cv2.COLOR_RGB2YCrCb).astype(np.float32)
+        k = np.ones((8 * scale + 3,) * 2, np.uint8)   # colours come from about two glyphs around
+        for c in (1, 2):
+            self.assertTrue(np.all(b[..., c] <= cv2.dilate(a[..., c], k) + 2))
+            self.assertTrue(np.all(b[..., c] >= cv2.erode(a[..., c], k) - 2))
+        core = cv2.erode((a[..., 0] < 100).astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+        if core.any():
+            self.assertGreater(float(b[..., 1][core].mean()), 160.0)   # still red
+
+    def test_photos_flat_areas_and_white_on_colour_untouched(self):
+        gradient = np.tile(np.linspace(40, 220, 160, dtype=np.float32), (80, 1))
+        rgb = np.repeat(gradient.astype(np.uint8)[..., None], 3, axis=2)
+        self.assertLessEqual(int(np.abs(crisp_ink(rgb, 3).astype(int) - rgb).max()), 1)
+
+        ink, base, _, _ = self.run_crisp(3)
+        bar = np.empty(base.shape + (3,), np.uint8)
+        alpha = np.clip((PAPER - base) / (PAPER - INK), 0, 1)[..., None]
+        teal, white = np.array([40, 140, 170], np.float32), np.array([255, 255, 255], np.float32)
+        bar[:] = np.clip(teal + alpha * (white - teal), 0, 255).astype(np.uint8)   # white text on teal
+        self.assertLessEqual(int(np.abs(crisp_ink(bar, 3).astype(int) - bar).max()), 2)
+
+    def test_strength_zero_and_bw_profile_disable_it(self):
+        _, _, rgb, _ = self.run_crisp(2)
+        np.testing.assert_array_equal(crisp_ink(rgb, 2, 0.0), rgb)
+        self.assertEqual(make_config("bw").ink_crisp, 0.0)
+        self.assertGreater(make_config("natural").ink_crisp, 0.0)
+        with self.assertRaises(ValueError):
+            make_config("natural", ink_crisp=1.5)
 
 
 class SourceStructureTests(unittest.TestCase):

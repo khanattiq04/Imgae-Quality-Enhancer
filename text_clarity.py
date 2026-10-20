@@ -12,6 +12,13 @@ Pipeline (each stage is optional and strength-controlled):
   3. controlled local contrast     (CLAHE, gated to real text contrast)
   4. ink/paper boundary refinement (local-level sigmoid about the half level)
   5. optional hard binarisation    (Bernsen local threshold, B&W print only)
+
+Receipt regions additionally go through `crisp_ink` (colour output only):
+small text that was downscaled into a chat screenshot reaches us as soft,
+grey, over-wide strokes.  crisp_ink re-renders each stroke from its own
+measured ink and paper levels with an anti-aliased edge placed at the
+stroke's half-depth contour, so blur spread is trimmed (strokes get thinner,
+not bolder) and edges become sharp, while counters and gaps may never darken.
 """
 
 from dataclasses import dataclass, replace
@@ -29,13 +36,13 @@ WIENER_SIGMA_FACTOR = 0.7   # deliberately under-correct the measured blur
 GATE_LOW, GATE_RAMP = 20.0, 30.0
 
 PROFILE_DEFAULTS = {
-    "natural": dict(deblur=0.25, edge_refine=0.35, threshold=0.0, denoise=0.3, local_contrast=0.1),
-    "crisp": dict(deblur=0.4, edge_refine=0.5, threshold=0.0, denoise=0.3, local_contrast=0.1),
-    "bw": dict(deblur=0.35, edge_refine=0.5, threshold=1.0, denoise=0.3, local_contrast=0.1, binarize=True),
+    "natural": dict(deblur=0.25, edge_refine=0.35, threshold=0.0, denoise=0.3, local_contrast=0.1, ink_crisp=1.0),
+    "crisp": dict(deblur=0.4, edge_refine=0.5, threshold=0.0, denoise=0.3, local_contrast=0.1, ink_crisp=1.0),
+    "bw": dict(deblur=0.35, edge_refine=0.5, threshold=1.0, denoise=0.3, local_contrast=0.1, ink_crisp=0.0, binarize=True),
 }
 # Caps applied while safe_mode is on so a slider can never reach aggressive territory.
 SAFE_LIMITS = {"deblur": 0.5, "edge_refine": 0.6, "threshold": 0.5, "local_contrast": 0.2}
-_STRENGTHS = ("deblur", "edge_refine", "threshold", "denoise", "local_contrast")
+_STRENGTHS = ("deblur", "edge_refine", "threshold", "denoise", "local_contrast", "ink_crisp")
 
 
 @dataclass(frozen=True)
@@ -47,6 +54,7 @@ class ClarityConfig:
     threshold: float = 0.0
     denoise: float = 0.3
     local_contrast: float = 0.2
+    ink_crisp: float = 0.0
     binarize: bool = False
     safe_mode: bool = True
 
@@ -277,6 +285,104 @@ def enhance_luma(luma: np.ndarray, scale: float, blur_sigma=None, config: Clarit
     if cfg.binarize:
         return adaptive_binarize(y, scale).astype(np.float32)
     return y
+
+
+# Coverage (0 = paper, 1 = the stroke's own darkest ink) at which a crisp edge
+# is placed.  The half-depth contour of each stroke trims the grey blur spread
+# that makes downscaled receipt text look bold, while thin strokes keep their
+# centre line (the level is relative to each stroke's own depth).
+INK_EDGE_LEVEL = 0.5
+INK_EDGE_SOFTNESS = 0.05    # anti-aliasing width, in coverage units
+INK_NEUTRAL_BOOST = 0.25    # extra darkness for black/grey ink (coloured ink keeps its tone)
+INK_MIN_SPAN = 60.0         # ink/paper contrast below this is not treated as text
+RIDGE_MIN_DEPTH = 40.0      # a stroke centre this much darker than paper is never erased
+
+
+def _weighted_mean(channel: np.ndarray, weight: np.ndarray, sigma: float):
+    num = cv2.GaussianBlur(channel * weight, (0, 0), sigma)
+    den = cv2.GaussianBlur(weight, (0, 0), sigma)
+    return num / np.maximum(den, 1e-4), den
+
+
+def crisp_ink(rgb: np.ndarray, scale: float, strength: float = 1.0) -> np.ndarray:
+    """Sharp, thin, solid text strokes for an upscaled RGB receipt patch.
+
+    For every pixel the local paper level (max over about one glyph) and the
+    nearest stroke's own ink level (min over about one source pixel) are
+    measured.  Coverage between them is pushed through a narrow sigmoid
+    centred on the half level, then the pixel is re-mixed from the
+    local paper colour and the stroke's ink colour.  Effects:
+
+    * soft grey fringes from the downscale/JPEG become paper -> no ink spread;
+    * stroke interiors become solid ink -> no washed-out cores;
+    * edges become ~1 output pixel wide (anti-aliased, not jagged);
+    * colours come only from nearby paper/ink, so red text stays red and
+      coloured fringes (pink halos around red text) are removed.
+
+    Safeguards: only dark-ink-on-light-paper areas with real contrast where
+    ink is the minority are touched (photos, solid colour bars and white text
+    on colour are left alone), and a pixel brighter than its neighbourhood
+    (a counter or a gap between characters) is never darkened.
+    """
+    if strength <= 0:
+        return rgb
+    ycc = cv2.cvtColor(np.ascontiguousarray(rgb, dtype=np.uint8), cv2.COLOR_RGB2YCrCb).astype(np.float32)
+    y = ycc[..., 0]
+    kb = _odd(4 * scale + 1)    # about one glyph: local paper
+    ks = _odd(2 * scale + 1)    # about one source stroke: that stroke's ink
+
+    paper = cv2.dilate(y, _ellipse(kb))
+    paper = np.maximum(cv2.GaussianBlur(paper, (0, 0), kb / 3.0), paper)
+    ink = cv2.erode(y, _ellipse(ks))
+    ink = np.minimum(cv2.GaussianBlur(ink, (0, 0), ks / 3.0), ink)
+    span = paper - ink
+
+    coverage = np.clip((paper - y) / np.maximum(span, 1.0), 0.0, 1.0)
+    s = 1.0 / (1.0 + np.exp(-(coverage - INK_EDGE_LEVEL) / INK_EDGE_SOFTNESS))
+    s0 = 1.0 / (1.0 + math.exp(INK_EDGE_LEVEL / INK_EDGE_SOFTNESS))
+    s = np.clip((s - s0) / (1.0 - s0), 0.0, 1.0)
+
+    paper_w = (coverage < 0.12).astype(np.float32)
+    ink_w = (coverage > 0.8).astype(np.float32)
+    out = ycc.copy()
+    ink_chroma = []
+    for c in (1, 2):
+        pc, pd = _weighted_mean(ycc[..., c], paper_w, kb / 2.0)
+        ic, idn = _weighted_mean(ycc[..., c], ink_w, ks)
+        pc = np.where(pd > 0.02, pc, ycc[..., c])
+        ic = np.where(idn > 0.02, ic, ycc[..., c])
+        ink_chroma.append(ic)
+        out[..., c] = pc * (1.0 - s) + ic * s
+
+    iy, idn = _weighted_mean(y, ink_w, ks)
+    ink_y = np.where(idn > 0.02, np.minimum(iy, ink + 25.0), ink)
+    neutral = np.clip(1.0 - np.hypot(ink_chroma[0] - 128.0, ink_chroma[1] - 128.0) / 20.0, 0.0, 1.0)
+    ink_y = ink_y * (1.0 - INK_NEUTRAL_BOOST * neutral)
+    out[..., 0] = paper * (1.0 - s) + ink_y * s
+
+    # Counters and gaps between characters may only get lighter.
+    neighbourhood = cv2.GaussianBlur(y, (0, 0), max(1.0, 0.75 * scale))
+    out[..., 0] = np.where(y >= neighbourhood, np.maximum(out[..., 0], y), out[..., 0])
+
+    # Never erase a stroke centre line (the darkest pixel across a stroke).
+    # A faint hairline next to a darker stroke (the thin leg of a red "A"
+    # above its underline, the flag of a "1") measures a low coverage and
+    # would be cut; such pixels keep their original value.  Nothing is
+    # darkened here, so characters cannot be joined.
+    lr = _odd(2 * scale + 1)
+    ridge = (y <= cv2.erode(y, np.ones((1, lr), np.uint8)) + 0.5) | (
+        y <= cv2.erode(y, np.ones((lr, 1), np.uint8)) + 0.5
+    )
+    ridge &= (paper - y >= RIDGE_MIN_DEPTH) & (s < 0.5)
+    out = np.where(ridge[..., None], ycc, out)
+
+    gate = np.clip((span - INK_MIN_SPAN) / 40.0, 0.0, 1.0)
+    gate *= np.clip((paper - 150.0) / 40.0, 0.0, 1.0)          # light paper only
+    ink_share = cv2.blur(coverage, (3 * kb, 3 * kb))
+    gate *= np.clip((0.55 - ink_share) / 0.15, 0.0, 1.0)      # ink must be the minority
+    gate *= float(strength)
+    out = ycc + gate[..., None] * (out - ycc)
+    return cv2.cvtColor(np.clip(out + 0.5, 0, 255).astype(np.uint8), cv2.COLOR_YCrCb2RGB)
 
 
 def _protect_shapes(y: np.ndarray, original: np.ndarray, scale: float) -> np.ndarray:

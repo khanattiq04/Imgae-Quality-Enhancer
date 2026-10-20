@@ -435,6 +435,51 @@
       line-height: 1.5;
     }
 
+    /* Values to check after Generate OCR */
+    .fix-panel {
+      margin-top: 0.9rem;
+      padding: 1rem 1.15rem 1.1rem;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--warning-border);
+      background: var(--warning-bg);
+    }
+    .fix-panel.done { border-color: rgba(16, 185, 129, 0.35); background: rgba(16, 185, 129, 0.08); }
+    .fix-title { display: flex; flex-direction: column; gap: 0.25rem; color: var(--text-muted); font-size: 0.86rem; line-height: 1.45; }
+    .fix-title strong { color: #fff; font-size: 0.95rem; font-weight: 600; }
+    .fix-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.6rem 0.9rem;
+      margin-top: 0.85rem;
+      padding-top: 0.85rem;
+      border-top: 1px solid var(--glass-border);
+    }
+    .fix-label { flex-basis: 100%; color: var(--text); font-weight: 600; font-size: 0.88rem; letter-spacing: 0.02em; }
+    .fix-views { display: flex; gap: 0.5rem; }
+    .fix-views figure { margin: 0; display: flex; flex-direction: column; align-items: center; gap: 0.25rem; }
+    .card .fix-panel .fix-views img {
+      width: auto; height: 72px; min-width: 72px; max-width: 200px; object-fit: contain; transform: none; padding: 0;
+      background: #fff; border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.18);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+    }
+    .fix-views figcaption { font-size: 0.68rem; color: var(--text-dim); letter-spacing: 0.06em; text-transform: uppercase; }
+    .fix-field { flex: 1 1 150px; min-width: 0; display: flex; flex-direction: column; gap: 0.4rem; }
+    .fix-input {
+      width: 100%; padding: 0.6rem 0.75rem; border-radius: var(--radius-sm);
+      border: 1px solid var(--glass-border); background: #0b1222; color: var(--text);
+      font-size: 1.05rem; font-weight: 550; letter-spacing: 0.06em; font-variant-numeric: tabular-nums;
+    }
+    .fix-input:focus { outline: none; border-color: var(--glass-border-focus); box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.15); }
+    .fix-suggest {
+      align-self: flex-start; padding: 0.3rem 0.65rem; border-radius: 999px; cursor: pointer;
+      border: 1px solid rgba(56, 189, 248, 0.35); background: rgba(56, 189, 248, 0.08);
+      color: var(--text-muted); font-size: 0.78rem; max-width: 100%; text-align: left;
+    }
+    .fix-suggest b { color: #fff; font-weight: 600; letter-spacing: 0.06em; margin-left: 0.2rem; }
+    .fix-suggest:hover { background: rgba(56, 189, 248, 0.16); }
+    .fix-apply { margin-top: 1rem; }
+
     .warning-note strong {
       color: #ffffff;
       font-weight: 600;
@@ -638,6 +683,58 @@
         height: 240px;
       }
     }
+    /* Value redraw / AI redraw dialogs */
+    .modal-backdrop {
+      position: fixed; inset: 0; z-index: 50;
+      background: rgba(3, 7, 18, 0.78);
+      display: none; align-items: flex-start; justify-content: center;
+      padding: 2rem 1rem; overflow-y: auto;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal {
+      width: min(980px, 100%);
+      background: #0f172a; border: 1px solid var(--glass-border);
+      border-radius: var(--radius-lg); padding: 1.25rem 1.25rem 1.5rem;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+    }
+    .modal h2 { font-size: 1.15rem; margin-bottom: 0.4rem; }
+    .modal p.lead { color: var(--text-muted); font-size: 0.88rem; line-height: 1.5; margin-bottom: 0.8rem; }
+    .modal .warning-note { display: block; margin: 0 0 0.9rem; }
+    .modal-toolbar { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.75rem 0; align-items: center; }
+    .modal-toolbar .action-btn { padding: 0.55rem 0.9rem; }
+    .modal-toolbar .spacer { flex: 1; }
+    .action-btn-plain {
+      background: rgba(255, 255, 255, 0.06); color: var(--text);
+      border: 1px solid var(--glass-border);
+    }
+    .action-btn-plain:hover { background: rgba(255, 255, 255, 0.12); }
+    .value-list { display: flex; flex-direction: column; gap: 0.45rem; }
+    .value-row {
+      display: grid; grid-template-columns: minmax(90px, 220px) 1fr 92px 110px;
+      gap: 0.6rem; align-items: center;
+      padding: 0.45rem 0.55rem; border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.03); border: 1px solid transparent;
+    }
+    .value-row.check { border-color: var(--warning-border); background: var(--warning-bg); }
+    .value-row.confirmed { border-color: rgba(16, 185, 129, 0.45); }
+    .value-row img { max-width: 100%; max-height: 64px; background: #fff; border-radius: 4px; image-rendering: auto; }
+    .value-row input[type=text], .modal input.text-input, .value-row select {
+      width: 100%; padding: 0.5rem 0.6rem; border-radius: var(--radius-sm);
+      border: 1px solid var(--glass-border); background: #0b1222; color: var(--text); font-size: 0.95rem;
+    }
+    .value-row .tag { font-size: 0.72rem; color: var(--warning-text); }
+    .value-row label { font-size: 0.82rem; color: var(--text-muted); display: flex; gap: 0.35rem; align-items: center; }
+    .compare-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin: 0.8rem 0; }
+    .compare-pair figure { margin: 0; }
+    .compare-pair img { width: 100%; border-radius: var(--radius-sm); background: #fff; }
+    .compare-pair figcaption { font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.3rem; }
+    .diff-list { font-size: 0.86rem; line-height: 1.6; color: var(--text); }
+    .diff-list li { margin-left: 1.1rem; }
+    .diff-list .num { color: var(--warning-text); font-weight: 600; }
+    @media (max-width: 640px) {
+      .value-row { grid-template-columns: 1fr 1fr; }
+      .compare-pair { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
@@ -782,6 +879,17 @@
         </div>
       </div>
       <div class="control-group">
+        <label for="inkCrispSelect">Sharp receipt text (trim ink spread)</label>
+        <div class="select-wrapper">
+          <select id="inkCrispSelect">
+            <option value="" selected>Profile default (full)</option>
+            <option value="0">Off</option>
+            <option value="0.5">Half</option>
+            <option value="1">Full</option>
+          </select>
+        </div>
+      </div>
+      <div class="control-group">
         <label for="textThresholdSelect">Ink/paper thresholding</label>
         <div class="select-wrapper">
           <select id="textThresholdSelect">
@@ -804,6 +912,12 @@
         <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
       </svg>
       Enhance &amp; Sharpen All Files
+    </button>
+    <button class="btn" id="ocrBtn" onclick="generateOcrPdf()" style="margin-top:0.75rem;background:var(--emerald-gradient)">
+      <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+      </svg>
+      Generate OCR (sharp table values)
     </button>
 
     <div class="print-note">
@@ -832,6 +946,55 @@
     </div>
 
     <div class="gallery" id="gallery"></div>
+  </div>
+
+  <div class="modal-backdrop" id="ocrModal" onclick="if (event.target === this) closeModal('ocrModal')">
+    <div class="modal">
+      <h2>Redraw values (OCR, you confirm each one)</h2>
+      <p class="lead">Each value was read from the original screenshot. Check it against the enlarged original on the left,
+        correct it if needed and tick <strong>Confirm</strong>. Only ticked values are redrawn in a sharp font at the same
+        place and colour; values in the table share one font size. Everything else keeps its enhanced pixels.</p>
+      <div class="warning-note"><strong>Check every number.</strong> Yellow rows were hard to read or not read at all; type what the original says.</div>
+      <div class="modal-toolbar">
+        <button class="action-btn action-btn-plain" onclick="tickReadValues(true)">Tick all read values</button>
+        <button class="action-btn action-btn-plain" onclick="tickReadValues(false)">Untick all</button>
+        <select id="fontAll" class="text-input" style="width:auto;padding:0.5rem 0.6rem;border-radius:8px;background:#0b1222;color:var(--text);border:1px solid var(--glass-border)">
+          <option value="serif">Serif (Times)</option>
+          <option value="sans">Sans (Arial)</option>
+        </select>
+        <button class="action-btn action-btn-plain" onclick="setAllFonts()">Same font for all</button>
+        <span class="spacer"></span>
+        <span id="ocrStatus" class="card-meta"></span>
+      </div>
+      <div class="value-list" id="ocrList"></div>
+      <div class="modal-toolbar">
+        <button class="action-btn action-btn-plain" onclick="closeModal('ocrModal')">Close</button>
+        <span class="spacer"></span>
+        <button class="action-btn action-btn-plain" id="ocrUndo" onclick="undoRedraw()">Undo redraw</button>
+        <button class="action-btn action-btn-pdf" id="ocrApply" onclick="applyRedraw()">Redraw confirmed values</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="aiModal" onclick="if (event.target === this) closeModal('aiModal')">
+    <div class="modal">
+      <h2>AI redraw (like ChatGPT)</h2>
+      <div class="warning-note"><strong>Generative AI repaints the whole screenshot.</strong> It looks very sharp but it can silently
+        change names and numbers (for example a 7 becoming a 1). The screenshot is sent to OpenAI. Always compare with the original
+        before you use or print it. For values you must rely on, use <em>Redraw values (OCR)</em> instead.</div>
+      <div class="modal-toolbar">
+        <input class="text-input" type="password" id="aiKey" placeholder="OpenAI API key (sk-...), not saved" style="flex:2;min-width:220px">
+        <input class="text-input" type="text" id="aiModel" placeholder="Model (default gpt-image-1)" style="flex:1;min-width:160px">
+        <button class="action-btn action-btn-png" id="aiRun" onclick="runAiRedraw()">Run AI redraw</button>
+      </div>
+      <div id="aiStatus" class="card-meta"></div>
+      <div id="aiResult"></div>
+      <div class="modal-toolbar">
+        <button class="action-btn action-btn-plain" onclick="closeModal('aiModal')">Close</button>
+        <span class="spacer"></span>
+        <button class="action-btn action-btn-pdf" id="aiUse" onclick="useAiResult()" style="display:none">Use AI image for this result</button>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -924,7 +1087,7 @@
           formData.append('contrast', contrast);
           formData.append('brightness', brightness);
           formData.append('threshold', threshold ? 'true' : 'false');
-          [['deblur', 'deblurSelect'], ['edge_refine', 'edgeRefineSelect'], ['text_threshold', 'textThresholdSelect']]
+          [['deblur', 'deblurSelect'], ['edge_refine', 'edgeRefineSelect'], ['text_threshold', 'textThresholdSelect'], ['ink_crisp', 'inkCrispSelect']]
             .forEach(([key, id]) => {
               const value = document.getElementById(id).value;
               if (value !== '') formData.append(key, value);
@@ -938,6 +1101,7 @@
             if (!data.success) throw new Error(data.error || 'Unknown error');
             data.items.forEach(item => {
               item.original_url = originalUrl;
+              item.source_file = originalUrl ? file : null;
               processedResults.push(item);
               renderCard(item, processedResults.length - 1);
             });
@@ -965,7 +1129,7 @@
         ? `<button class="action-btn action-btn-png" onclick="downloadThreshold(${index})">B&amp;W Variant</button>`
         : '';
       const warnings = (item.clarity && item.clarity.warnings) || [];
-      const warningHtml = warnings.map(w => `<div class="warning-note"><strong>Note:</strong> ${w}</div>`).join('');
+      const warningHtml = warnings.map(w => `<div class="warning-note" style="display:block"><strong>Note:</strong> ${w}</div>`).join('');
       const compareHtml = item.original_url ? `
           <div class="card-meta">
             <button class="action-btn action-btn-png" onclick="toggleOriginal(${index}, this)">Show original</button>
@@ -1007,6 +1171,10 @@
             </button>
             ${thresholdButton}
           </div>
+          ${item.source_file ? `<div class="card-actions">
+            <button class="action-btn action-btn-plain" onclick="openOcrRedraw(${index})" title="Read values, confirm them, redraw them sharp">Redraw values (OCR)</button>
+            ${localAiAvailable ? `<button class="action-btn action-btn-plain" onclick="openAiRedraw(${index})" title="Generative redraw, can change text">AI redraw (GPT)</button>` : ''}
+          </div>` : ''}
         </div>
       `;
       gallery.appendChild(card);
@@ -1155,6 +1323,411 @@
       } else if (usingAiMode) {
         aiWarning.innerHTML = '<strong>AI Super-Resolution:</strong> Experimental deep generative upscaling. May invent or alter fine characters and numbers.';
       }
+    }
+    // ---------------- Value redraw (OCR + confirmation) ----------------
+    let ocrIndex = null;
+    let ocrItems = [];
+
+    function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+
+    function setCardImage(index) {
+      const card = document.getElementById('gallery').children[index];
+      if (!card) return;
+      const img = card.querySelector('.card-preview-wrapper img');
+      img.src = processedResults[index].data_url;
+      img.dataset.showing = 'enhanced';
+      const wrapper = card.querySelector('.card-preview-wrapper');
+      wrapper.onclick = () => window.open(processedResults[index].data_url, '_blank');
+    }
+
+    async function openOcrRedraw(index) {
+      const item = processedResults[index];
+      if (!item || !item.source_file) return;
+      ocrIndex = index;
+      ocrItems = [];
+      const list = document.getElementById('ocrList');
+      const status = document.getElementById('ocrStatus');
+      list.innerHTML = '';
+      status.textContent = 'Reading values from the original screenshot...';
+      document.getElementById('ocrUndo').style.display = item.enhanced_url ? '' : 'none';
+      document.getElementById('ocrModal').classList.add('open');
+      try {
+        const form = new FormData();
+        form.append('file', item.source_file);
+        const res = await fetch('/api/ocr/detect', { method: 'POST', body: form });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Could not read the values.');
+        ocrItems = data.items.map(it => ({ ...it, confirmed: false }));
+        renderOcrList();
+      } catch (err) {
+        status.textContent = err.message;
+      }
+    }
+
+    function renderOcrList() {
+      const list = document.getElementById('ocrList');
+      list.innerHTML = '';
+      ocrItems.forEach((it, i) => {
+        const row = document.createElement('div');
+        row.className = 'value-row' + ((it.low_confidence || it.unread) ? ' check' : '') + (it.confirmed ? ' confirmed' : '');
+
+        const img = document.createElement('img');
+        img.src = it.crop_url;
+        img.alt = 'Original';
+
+        const textWrap = document.createElement('div');
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.value = it.text;
+        input.placeholder = it.unread ? 'Not read - type the value' : '';
+        input.oninput = () => { it.text = input.value; };
+        textWrap.appendChild(input);
+        if (it.unread || it.low_confidence) {
+          const tag = document.createElement('div');
+          tag.className = 'tag';
+          tag.textContent = it.unread ? 'Not read by OCR' : `Low confidence (${Math.round(it.confidence * 100)}%), check carefully`;
+          textWrap.appendChild(tag);
+        }
+
+        const font = document.createElement('select');
+        [['serif', 'Serif'], ['sans', 'Sans']].forEach(([v, label]) => {
+          const opt = document.createElement('option');
+          opt.value = v; opt.textContent = label; opt.selected = it.font === v;
+          font.appendChild(opt);
+        });
+        font.onchange = () => { it.font = font.value; };
+
+        const label = document.createElement('label');
+        const box = document.createElement('input');
+        box.type = 'checkbox';
+        box.checked = !!it.confirmed;
+        box.onchange = () => { it.confirmed = box.checked; row.classList.toggle('confirmed', box.checked); updateOcrStatus(); };
+        label.appendChild(box);
+        label.appendChild(document.createTextNode('Confirm'));
+
+        row.append(img, textWrap, font, label);
+        list.appendChild(row);
+      });
+      updateOcrStatus();
+    }
+
+    function updateOcrStatus() {
+      const confirmed = ocrItems.filter(it => it.confirmed && it.text.trim()).length;
+      document.getElementById('ocrStatus').textContent = `${ocrItems.length} values found, ${confirmed} confirmed`;
+    }
+
+    function setAllFonts() {
+      const family = document.getElementById('fontAll').value;
+      ocrItems.forEach(it => { it.font = family; });
+      renderOcrList();
+    }
+
+    function tickReadValues(on) {
+      ocrItems.forEach(it => { it.confirmed = on && !it.unread && it.text.trim() !== ''; });
+      renderOcrList();
+    }
+
+    async function applyRedraw() {
+      const item = processedResults[ocrIndex];
+      if (!item) return;
+      const confirmed = ocrItems.filter(it => it.confirmed && it.text.trim());
+      if (!confirmed.length) return alert('Tick Confirm for at least one value.');
+      const apply = document.getElementById('ocrApply');
+      apply.disabled = true;
+      try {
+        const base = item.enhanced_url || item.data_url;
+        const payload = {
+          data_url: base,
+          scale: item.width / item.orig_width,
+          items: ocrItems.map(({ crop_url, ...rest }) => rest),
+        };
+        const res = await fetch('/api/ocr/redraw', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Could not redraw.');
+        item.enhanced_url = base;
+        item.data_url = data.data_url;
+        setCardImage(ocrIndex);
+        document.getElementById('ocrUndo').style.display = '';
+        document.getElementById('ocrStatus').textContent = `${data.redrawn} values redrawn. Download PNG/PDF now uses the redrawn image.`;
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        apply.disabled = false;
+      }
+    }
+
+    function undoRedraw() {
+      const item = processedResults[ocrIndex];
+      if (!item || !item.enhanced_url) return;
+      item.data_url = item.enhanced_url;
+      delete item.enhanced_url;
+      setCardImage(ocrIndex);
+      document.getElementById('ocrUndo').style.display = 'none';
+      document.getElementById('ocrStatus').textContent = 'Redraw undone.';
+    }
+
+    // ---------------- AI redraw (generative, OpenAI) ----------------
+    let aiIndex = null;
+    let aiData = null;
+
+    function openAiRedraw(index) {
+      aiIndex = index;
+      aiData = null;
+      document.getElementById('aiResult').innerHTML = '';
+      document.getElementById('aiStatus').textContent = '';
+      document.getElementById('aiUse').style.display = 'none';
+      document.getElementById('aiModal').classList.add('open');
+    }
+
+    async function runAiRedraw() {
+      const item = processedResults[aiIndex];
+      if (!item || !item.source_file) return;
+      const run = document.getElementById('aiRun');
+      const status = document.getElementById('aiStatus');
+      const result = document.getElementById('aiResult');
+      run.disabled = true;
+      result.innerHTML = '';
+      status.textContent = 'Sending to the image AI... this can take a minute.';
+      try {
+        const form = new FormData();
+        form.append('file', item.source_file);
+        form.append('api_key', document.getElementById('aiKey').value);
+        form.append('model', document.getElementById('aiModel').value);
+        const res = await fetch('/api/ai/redraw', { method: 'POST', body: form });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'AI redraw failed.');
+        aiData = data;
+        status.textContent = `Model: ${data.model}. Compare carefully before using it.`;
+
+        const pair = document.createElement('div');
+        pair.className = 'compare-pair';
+        [['Original screenshot', item.original_url], ['AI redraw', data.data_url]].forEach(([caption, src]) => {
+          const fig = document.createElement('figure');
+          const cap = document.createElement('figcaption');
+          cap.textContent = caption;
+          const img = document.createElement('img');
+          img.src = src;
+          img.onclick = () => window.open(src, '_blank');
+          fig.append(cap, img);
+          pair.appendChild(fig);
+        });
+        result.appendChild(pair);
+
+        const note = document.createElement('div');
+        note.className = 'warning-note';
+        if (!data.checked) {
+          note.textContent = 'OCR is not installed, so the AI image could not be checked automatically. Compare every value yourself.';
+        } else if (!data.differences.length) {
+          note.textContent = 'Every text read from the original was also found in the AI image. Still compare the numbers yourself.';
+        } else {
+          const title = document.createElement('strong');
+          title.textContent = `Check these ${data.differences.length} spots: text from the original that was not found in the AI image.`;
+          const ul = document.createElement('ul');
+          ul.className = 'diff-list';
+          data.differences.slice(0, 25).forEach(d => {
+            const li = document.createElement('li');
+            const orig = document.createElement('span');
+            orig.className = d.has_digits ? 'num' : '';
+            orig.textContent = `"${d.original}"`;
+            li.append('Original ', orig, ` - closest in AI image: "${d.other || 'nothing'}"`);
+            ul.appendChild(li);
+          });
+          note.append(title, ul);
+        }
+        result.appendChild(note);
+        document.getElementById('aiUse').style.display = '';
+      } catch (err) {
+        status.textContent = err.message;
+      } finally {
+        run.disabled = false;
+      }
+    }
+
+    function useAiResult() {
+      const item = processedResults[aiIndex];
+      if (!item || !aiData) return;
+      if (!confirm('Use the AI-redrawn image? Make sure every number matches the original.')) return;
+      item.enhanced_url = item.enhanced_url || item.data_url;
+      item.data_url = aiData.data_url;
+      item.filename = item.filename.replace(/(_AI)?\.png$/i, '_AI.png');
+      setCardImage(aiIndex);
+      closeModal('aiModal');
+    }
+    // ---------------- One-click OCR PDF ----------------
+    async function generateOcrPdf() {
+      if (selectedFiles.length === 0) return alert('Please select at least one screenshot!');
+      const button = document.getElementById('ocrBtn');
+      const progressBar = document.getElementById('progressBar');
+      const progressFill = document.getElementById('progressFill');
+      const gallery = document.getElementById('gallery');
+      button.disabled = true;
+      progressBar.style.display = 'block';
+      progressFill.style.width = '0%';
+      gallery.innerHTML = '';
+      processedResults = [];
+      const scale = document.getElementById('scaleSelect').value;
+      const dpi = document.getElementById('dpiSelect').value;
+      const errors = [];
+      for (let i = 0; i < selectedFiles.length; i++) {
+        const file = selectedFiles[i];
+        try {
+          if (!(file.type && file.type.startsWith('image/'))) throw new Error('only screenshots (images) are supported');
+          const form = new FormData();
+          form.append('file', file);
+          form.append('scale', scale);
+          form.append('dpi', dpi);
+          const res = await fetch('/api/ocr/auto', { method: 'POST', body: form });
+          const data = await res.json();
+          if (!data.success) throw new Error(data.error || 'OCR failed');
+          data.original_url = URL.createObjectURL(file);
+          data.clarity = { warnings: data.note ? [data.note] : [] };
+          processedResults.push(data);
+          renderCard(data, processedResults.length - 1);
+          if (data.skipped.length) renderFixPanel(processedResults.length - 1);
+          else renderReadSummary(processedResults.length - 1);
+        } catch (err) {
+          errors.push(`${file.name}: ${err.message}`);
+        }
+        progressFill.style.width = `${Math.round(((i + 1) / selectedFiles.length) * 100)}%`;
+      }
+      button.disabled = false;
+      document.getElementById('resultsHeader').style.display = processedResults.length ? 'flex' : 'none';
+      if (errors.length) alert(`${errors.length} file(s) could not be processed:\n${errors.slice(0, 3).join('\n')}`);
+    }
+    // ---------------- Type in the values the tool could not read ----------------
+    // Each value gets: the original pixels, the same spot in the enhanced image
+    // (much easier to read), the tool's best guess as a one-click suggestion,
+    // and a box to type the value. Nothing is filled in without a click.
+    function enhancedCropUrl(item, sk) {
+      return new Promise(resolve => {
+        const src = new Image();
+        src.onload = () => {
+          const s = item.scale || 1;
+          const [x0, y0, x1, y1] = sk.box;
+          const pad = Math.max(4, (y1 - y0) * 0.9);
+          const sx = Math.max(0, (x0 - pad) * s), sy = Math.max(0, (y0 - pad) * s);
+          const sw = Math.min(src.width - sx, (x1 - x0 + 2 * pad) * s);
+          const sh = Math.min(src.height - sy, (y1 - y0 + 2 * pad) * s);
+          const zoom = Math.max(1, 64 / Math.max(sh, 1));
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.round(sw * zoom); canvas.height = Math.round(sh * zoom);
+          const ctx = canvas.getContext('2d');
+          ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+          ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(src, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+          resolve(canvas.toDataURL('image/png'));
+        };
+        src.onerror = () => resolve('');
+        src.src = item.enhanced_url;
+      });
+    }
+
+    // Every value was read: say so, and how the tool made sure.
+    function renderReadSummary(index) {
+      const item = processedResults[index];
+      const card = document.getElementById('gallery').children[index];
+      if (!card || !item.redrawn) return;
+      const count = (kind) => item.redrawn.filter(r => r.evidence === kind).length;
+      const parts = [];
+      if (count('arithmetic')) parts.push(`${count('arithmetic')} checked against the receipt's own totals`);
+      if (count('vocabulary')) parts.push(`${count('vocabulary')} matched to known names`);
+      if (count('shape') + count('format')) parts.push(`${count('shape') + count('format')} matched by shape or number format`);
+      const panel = document.createElement('div');
+      panel.className = 'fix-panel done';
+      panel.innerHTML = `<div class="fix-title"><strong>All ${item.redrawn.length} values read automatically</strong>`
+        + `<span>${parts.length ? parts.join(' · ') + '.' : ''} Compare with the original before sending.</span></div>`;
+      card.querySelector('.card-body').prepend(panel);
+    }
+
+    function renderFixPanel(index) {
+      const item = processedResults[index];
+      const card = document.getElementById('gallery').children[index];
+      if (!card) return;
+      const panel = document.createElement('div');
+      panel.className = 'fix-panel';
+      const count = item.skipped.length;
+      const title = document.createElement('div');
+      title.className = 'fix-title';
+      title.innerHTML = `<strong>${count} value${count === 1 ? '' : 's'} need${count === 1 ? 's' : ''} a quick check</strong>`
+        + `<span>The tool was not sure enough to redraw ${count === 1 ? 'it' : 'them'} on its own. Compare with the zoomed `
+        + `original, use the suggestion or type the value, then click Apply. Leave a box empty to keep it as it is.</span>`;
+      panel.appendChild(title);
+
+      const inputs = [];
+      item.skipped.forEach(sk => {
+        const row = document.createElement('div');
+        row.className = 'fix-row';
+
+        const label = document.createElement('div');
+        label.className = 'fix-label';
+        label.textContent = (sk.column || 'Value').replace(/[:\s]+$/, '');
+
+        const views = document.createElement('div');
+        views.className = 'fix-views';
+        const orig = document.createElement('figure');
+        orig.innerHTML = `<img alt="Original" src="${sk.crop_url}"><figcaption>Original</figcaption>`;
+        const enh = document.createElement('figure');
+        enh.innerHTML = `<img alt="Enhanced"><figcaption>Enhanced</figcaption>`;
+        enhancedCropUrl(item, sk).then(url => { if (url) enh.querySelector('img').src = url; else enh.remove(); });
+        views.append(orig, enh);
+
+        const field = document.createElement('div');
+        field.className = 'fix-field';
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'fix-input';
+        input.placeholder = 'Type the value';
+        input.spellcheck = false;
+        input.addEventListener('keydown', e => { if (e.key === 'Enter') apply.click(); });
+        field.appendChild(input);
+        const guess = (sk.text || '').trim();
+        if (guess) {
+          const chip = document.createElement('button');
+          chip.type = 'button';
+          chip.className = 'fix-suggest';
+          chip.innerHTML = `Use tool's reading: <b></b>`;
+          chip.querySelector('b').textContent = guess;
+          chip.title = 'Fill the box with what the tool read. Check it against the original first.';
+          chip.onclick = () => { input.value = guess; input.focus(); };
+          field.appendChild(chip);
+        }
+        inputs.push([sk, input]);
+        row.append(label, views, field);
+        panel.appendChild(row);
+      });
+
+      const apply = document.createElement('button');
+      apply.className = 'action-btn action-btn-pdf fix-apply';
+      apply.textContent = 'Apply';
+      apply.onclick = async () => {
+        const typed = new Map(inputs.filter(([, i]) => i.value.trim()).map(([sk, i]) => [sk.id, i.value.trim()]));
+        if (!typed.size) return alert('Type at least one value.');
+        apply.disabled = true;
+        try {
+          const items = item.items.map(it => typed.has(it.id) ? { ...it, text: typed.get(it.id), confirmed: true, typed: true } : it);
+          const res = await fetch('/api/ocr/redraw', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ data_url: item.enhanced_url, scale: item.scale, items })
+          });
+          const data = await res.json();
+          if (!data.success) throw new Error(data.error || 'Could not apply the values.');
+          item.items = items;
+          item.data_url = data.data_url;
+          setCardImage(index);
+          title.innerHTML = '<strong>Done</strong><span>Download PDF / PNG now include the values you entered.</span>';
+          panel.classList.add('done');
+        } catch (err) {
+          alert(err.message);
+        } finally {
+          apply.disabled = false;
+        }
+      };
+      panel.appendChild(apply);
+      card.querySelector('.card-body').prepend(panel);
+      const first = inputs[0] && inputs[0][1];
+      if (first) first.focus({ preventScroll: true });
     }
   </script>
 </body>
