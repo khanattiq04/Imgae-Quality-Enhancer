@@ -3,6 +3,7 @@ import base64
 import binascii
 import hashlib
 import os
+import re
 import sys
 import threading
 import urllib.error
@@ -1224,8 +1225,7 @@ def ocr_auto():
     else keep the enhanced pixels.  Values the reader is not reasonably sure
     of are left enhanced rather than guessed, and are listed in "skipped".
     """
-    if not text_redraw.ocr_available():
-        return jsonify({"error": "OCR is not installed. Run: pip install -r requirements-desktop.txt"}), 400
+    ocr_ready = text_redraw.ocr_available() and text_redraw.strong_recogniser() is not None
     try:
         scale = int(request.form.get("scale", 3))
         dpi = int(request.form.get("dpi", 300))
@@ -1235,10 +1235,17 @@ def ocr_auto():
         return jsonify({"error": "Scale must be 1-6x and DPI 300 or 600."}), 400
     try:
         img = _source_image_from_request()
-        grids = _receipt_table_grids(img)
+        grids = _receipt_table_grids(img) if ocr_ready else []
         items = text_redraw.read_table_values(img, grids) if grids else []
         note = None
-        if items:
+        if not ocr_ready:
+            # The online version cannot carry the text reader (its size limits),
+            # so it gives the receipt sharpening; re-typing runs in the desktop app.
+            enhanced_info = enhance_image(img, scale_factor=scale, dpi=dpi, mode="receipt_chat")
+            result = Image.open(io.BytesIO(base64.b64decode(enhanced_info["data_url"].split(",", 1)[1])))
+            note = ("Re-typing values (OCR) only works in the desktop app, so this image was sharpened "
+                    "with the receipt profile instead.")
+        elif items:
             enhanced_info = enhance_image(img, scale_factor=scale, dpi=dpi, mode="receipt_chat")
             enhanced = Image.open(io.BytesIO(base64.b64decode(enhanced_info["data_url"].split(",", 1)[1])))
             result = text_redraw.redraw_values(enhanced, scale, items)
@@ -1272,7 +1279,7 @@ def ocr_auto():
         "print_height_inches": round(img.height / dpi, 2),
         "redrawn": [{"column": it["column"], "text": it["text"], "evidence": it.get("evidence", "recogniser")}
                     for it in items if it["confirmed"]],
-        "skipped": [_skipped_item(img, it) for it in items if not it["confirmed"]],
+        "skipped": _skipped_items(img, items),
         "scale": scale,
         "note": note,
         # For typing in the unread values: the plain enhancement and every value,
@@ -1291,6 +1298,112 @@ def _plain(value):
     if hasattr(value, "item"):
         return value.item()
     return value
+
+
+_COLUMN_LABELS = {
+    "serial": "Sr No", "site": "Site Name", "material": "Material", "category": "Category",
+    "material_rate": "Material Rate", "carriage": "Carriage", "service": "Service Charges",
+    "rate": "Rate", "cft": "CFT", "total": "Total Amount", "trucks": "Trucks",
+}
+_DIGIT_LOOKALIKES = str.maketrans({"O": "0", "o": "0", "D": "0", "Q": "0", "l": "1", "I": "1", "i": "1",
+                                   "|": "1", "!": "1", "L": "1", "S": "5", "s": "5", "B": "8", "Z": "2",
+                                   "z": "2", "G": "6", "b": "6", "g": "9", "q": "9", ",": "."})
+
+
+def _role(it):
+    import value_context
+    role = it.get("role") or value_context.column_role(it.get("column", ""))
+    if role or not it.get("column"):
+        return role
+    # A blurry column title ("Fategey", "Ralesn"): use the closest known title.
+    best, score = "", 0.0
+    for title in value_context.DEFAULT_VOCABULARY["header"]:
+        s = value_context.similar(it["column"], title)
+        if s > score:
+            best, score = title, s
+    return value_context.column_role(best) if score >= 0.45 else ""
+
+
+def _best_guess(it, items, vocab):
+    """The tool's best reading of a value it was not sure of, to pre-fill the type-in box.
+
+    Text columns snap to a known name (defaults, learned values, or the same
+    column elsewhere on this receipt); number columns get look-alike letters
+    fixed, the receipt's number format, and the row's own sum when it solves it.
+    """
+    import value_context
+    raw = str(it.get("text") or it.get("top_vote") or "").strip()
+    readings = [r for r in dict.fromkeys([raw] + list(it.get("candidates") or [])) if r]
+    role = _role(it)
+    if role in ("site", "material", "category"):
+        pool = list(vocab.get(role, []))
+        pool += [o["text"] for o in items if o.get("confirmed") and _role(o) == role and o.get("text")]
+        best, score = raw, 0.0
+        for cand in dict.fromkeys(pool):
+            for r in readings:
+                s = value_context.similar(r, cand)
+                if s > score:
+                    best, score = cand, s
+        return best if score >= 0.6 else raw
+    if role not in value_context.NUMBER_ROLES and role != "serial":
+        return raw
+
+    same_column = [o for o in items if o is not it and o.get("confirmed") and _role(o) == role
+                   and o.get("table") == it.get("table")]
+    if same_column:
+        decimal = any("." in str(o.get("text", "")) for o in same_column)
+    else:              # nothing sure in this column: rates and totals are written "167.00"
+        decimal = role in ("rate", "total") or "." in raw or "," in raw
+
+    def fmt(value):
+        return f"{value:.2f}" if decimal else (str(int(value)) if float(value).is_integer() else f"{value:g}")
+
+    # Row sum: Material Rate + Carriage + Service Charges = Rate.
+    parts = ("material_rate", "carriage", "service", "rate")
+    if role in parts:
+        row = {}
+        for o in items:
+            if o.get("table") == it.get("table") and o.get("row") == it.get("row") and _role(o) in parts:
+                row.setdefault(_role(o), []).append(o)
+        if all(len(row.get(p, [])) == 1 for p in parts):
+            known = {p: value_context.as_number(str(row[p][0]["text"])) for p in parts if p != role
+                     and row[p][0].get("confirmed")}
+            if len(known) == 3 and None not in known.values():
+                value = (known["material_rate"] + known["carriage"] + known["service"] if role == "rate"
+                         else known["rate"] - sum(v for p, v in known.items() if p != "rate"))
+                if value >= 0:
+                    return fmt(value)
+
+    for r in readings:
+        cleaned = re.sub(r"[^0-9.]", "", r.translate(_DIGIT_LOOKALIKES)).strip(".")
+        if not cleaned or len(cleaned) < 0.6 * len(r.replace(" ", "")):
+            continue           # mostly letters: not a number at all
+        for v in sorted(value_context.number_variants(cleaned, decimal)):
+            if value_context.as_number(v) is not None and ("." in v) == decimal:
+                return re.sub(r"^0+(?=\d)", "", v)
+        if value_context.as_number(cleaned) is not None:
+            return fmt(value_context.as_number(cleaned))
+    return raw
+
+
+def _skipped_items(img, items):
+    try:
+        import value_context
+        vocab = value_context.load_vocabulary()
+    except Exception:
+        vocab = {}
+    out = []
+    for it in items:
+        if it["confirmed"]:
+            continue
+        data = _skipped_item(img, it)
+        try:
+            data["suggestion"] = _best_guess(it, items, vocab)
+        except Exception:          # a suggestion is a convenience; never fail the request
+            data["suggestion"] = str(it.get("text") or "")
+        data["label"] = _COLUMN_LABELS.get(_role(it)) or (it.get("column") or "Value").rstrip(": ")
+        out.append(data)
+    return out
 
 
 def _skipped_item(img, it):

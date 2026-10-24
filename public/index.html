@@ -479,6 +479,24 @@
     .fix-suggest b { color: #fff; font-weight: 600; letter-spacing: 0.06em; margin-left: 0.2rem; }
     .fix-suggest:hover { background: rgba(56, 189, 248, 0.16); }
     .fix-apply { margin-top: 1rem; }
+    .fix-head-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.7rem; }
+    .fix-hint { font-size: 0.74rem; color: var(--text-dim); }
+    .fix-buttons { display: flex; flex-wrap: wrap; gap: 0.45rem; align-items: center; }
+    .fix-buttons .action-btn { padding: 0.45rem 0.85rem; font-size: 0.82rem; }
+    .fix-status { font-size: 0.8rem; color: #34d399; font-weight: 600; }
+    .fix-row.saved .fix-input { border-color: rgba(16, 185, 129, 0.6); }
+
+    /* Original receipt viewer */
+    .orig-viewer { position: fixed; inset: 0; z-index: 1000; display: none; flex-direction: column; background: rgba(2, 6, 18, 0.94); }
+    .orig-viewer.open { display: flex; }
+    .orig-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; padding: 0.7rem 1rem; border-bottom: 1px solid var(--glass-border); color: var(--text); }
+    .orig-bar .orig-title { flex: 1 1 200px; font-weight: 600; font-size: 0.92rem; }
+    .orig-bar button { padding: 0.45rem 0.8rem; border-radius: var(--radius-sm); border: 1px solid var(--glass-border); background: #0b1222; color: var(--text); cursor: pointer; font-size: 0.85rem; }
+    .orig-bar button:hover { border-color: var(--glass-border-focus); }
+    .orig-scroll { flex: 1; overflow: auto; padding: 1rem; }
+    .orig-stage { position: relative; margin: 0 auto; }
+    .orig-stage img { display: block; width: 100%; height: auto; background: #fff; image-rendering: auto; }
+    .orig-mark { position: absolute; border: 3px solid #f59e0b; border-radius: 4px; box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.35); pointer-events: none; }
 
     .warning-note strong {
       color: #ffffff;
@@ -738,6 +756,18 @@
   </style>
 </head>
 <body>
+  <div class="orig-viewer" id="origViewer" onclick="if (event.target === this || event.target.classList.contains('orig-scroll')) closeOriginalViewer()">
+    <div class="orig-bar">
+      <span class="orig-title" id="origTitle">Original receipt</span>
+      <button type="button" onclick="zoomOriginal(1 / 1.5)">&minus; Zoom out</button>
+      <button type="button" onclick="zoomOriginal(0)">Fit</button>
+      <button type="button" onclick="zoomOriginal(1.5)">+ Zoom in</button>
+      <button type="button" onclick="closeOriginalViewer()">Close</button>
+    </div>
+    <div class="orig-scroll" id="origScroll">
+      <div class="orig-stage" id="origStage"><img id="origImg" alt="Original receipt"><div class="orig-mark" id="origMark" style="display:none"></div></div>
+    </div>
+  </div>
   <div class="container">
     <header>
       <div class="badge-pill">
@@ -1255,7 +1285,9 @@
         const res = await fetch('/api/zip', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ items: processedResults })
+          // Only what the ZIP needs: OCR results also carry the plain enhancement,
+          // every value and zoomed crops, which made the request too large to send.
+          body: JSON.stringify({ items: processedResults.map(it => ({ filename: it.filename, data_url: it.data_url })) })
         });
         if (!res.ok) {
           const error = await res.json().catch(() => ({}));
@@ -1641,28 +1673,123 @@
       card.querySelector('.card-body').prepend(panel);
     }
 
+    // ---------------- Original receipt viewer ----------------
+    const viewer = { zoom: 0, box: null, index: -1 };
+
+    function openOriginalViewer(index, box, label) {
+      const item = processedResults[index];
+      if (!item || !item.original_url) return;
+      viewer.index = index;
+      viewer.box = box || null;
+      viewer.zoom = box ? 3 : 0;
+      document.getElementById('origTitle').textContent = label
+        ? `Original receipt — ${label} is marked` : `Original receipt — ${item.filename || ''}`;
+      const img = document.getElementById('origImg');
+      img.onload = layoutOriginal;
+      if (img.src !== item.original_url) img.src = item.original_url; else layoutOriginal();
+      document.getElementById('origViewer').classList.add('open');
+    }
+
+    function layoutOriginal() {
+      const img = document.getElementById('origImg');
+      const stage = document.getElementById('origStage');
+      const scroll = document.getElementById('origScroll');
+      const mark = document.getElementById('origMark');
+      const item = processedResults[viewer.index];
+      if (!img.naturalWidth || !item) return;
+      const fit = Math.min((scroll.clientWidth - 32) / img.naturalWidth, (scroll.clientHeight - 32) / img.naturalHeight, 1);
+      const zoom = viewer.zoom > 0 ? viewer.zoom : fit;
+      stage.style.width = `${Math.round(img.naturalWidth * zoom)}px`;
+      if (viewer.box) {
+        // Value boxes are in the uploaded image's pixels.
+        const k = zoom * img.naturalWidth / (item.orig_width || img.naturalWidth);
+        const [x0, y0, x1, y1] = viewer.box;
+        const pad = Math.max(3, (y1 - y0) * 0.6) * k;
+        Object.assign(mark.style, {
+          display: 'block', left: `${x0 * k - pad}px`, top: `${y0 * k - pad}px`,
+          width: `${(x1 - x0) * k + 2 * pad}px`, height: `${(y1 - y0) * k + 2 * pad}px`
+        });
+        scroll.scrollLeft = ((x0 + x1) / 2) * k - scroll.clientWidth / 2 + 16;
+        scroll.scrollTop = ((y0 + y1) / 2) * k - scroll.clientHeight / 2 + 16;
+      } else {
+        mark.style.display = 'none';
+      }
+    }
+
+    function zoomOriginal(factor) {
+      const img = document.getElementById('origImg');
+      const scroll = document.getElementById('origScroll');
+      const current = viewer.zoom > 0 ? viewer.zoom
+        : Math.min((scroll.clientWidth - 32) / img.naturalWidth, (scroll.clientHeight - 32) / img.naturalHeight, 1);
+      viewer.zoom = factor === 0 ? 0 : Math.min(8, Math.max(0.1, current * factor));
+      layoutOriginal();
+    }
+
+    function closeOriginalViewer() { document.getElementById('origViewer').classList.remove('open'); }
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeOriginalViewer(); });
+    window.addEventListener('resize', () => { if (document.getElementById('origViewer').classList.contains('open')) layoutOriginal(); });
+
+    // ---------------- Blurry values: tool's reading + type-in + save ----------------
+    // Shown only on receipts that have values the tool could not read surely.
+    // Each box is pre-filled with the tool's best reading; the user checks it
+    // against the original and saves that one value (or all of them).
+    async function saveFixValues(index, rows) {
+      const item = processedResults[index];
+      const typed = new Map(rows.map(r => [r.sk.id, r.input.value.trim()]));
+      const items = item.items.map(it => typed.has(it.id) ? { ...it, text: typed.get(it.id), confirmed: true, typed: true } : it);
+      const res = await fetch('/api/ocr/redraw', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data_url: item.enhanced_url, scale: item.scale, items })
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || 'Could not save the value.');
+      item.items = items;
+      item.data_url = data.data_url;
+      setCardImage(index);
+    }
+
     function renderFixPanel(index) {
       const item = processedResults[index];
       const card = document.getElementById('gallery').children[index];
-      if (!card) return;
+      if (!card || !item.skipped || !item.skipped.length) return;
       const panel = document.createElement('div');
       panel.className = 'fix-panel';
       const count = item.skipped.length;
       const title = document.createElement('div');
       title.className = 'fix-title';
-      title.innerHTML = `<strong>${count} value${count === 1 ? '' : 's'} need${count === 1 ? 's' : ''} a quick check</strong>`
-        + `<span>The tool was not sure enough to redraw ${count === 1 ? 'it' : 'them'} on its own. Compare with the zoomed `
-        + `original, use the suggestion or type the value, then click Apply. Leave a box empty to keep it as it is.</span>`;
+      const updateTitle = () => {
+        const left = rows.filter(r => !r.saved).length;
+        if (!left) {
+          title.innerHTML = '<strong>All values saved</strong><span>Download PDF / PNG now include the values you saved.</span>';
+          panel.classList.add('done');
+          return;
+        }
+        panel.classList.remove('done');
+        title.innerHTML = `<strong>${left} blurry value${left === 1 ? '' : 's'} to check</strong>`
+          + `<span>Each box shows what the tool read. Compare it with the original (use <b>View original</b> `
+          + `or <b>Show on original</b>), correct it if needed, then click <b>Save</b>.</span>`;
+      };
       panel.appendChild(title);
 
-      const inputs = [];
+      const head = document.createElement('div');
+      head.className = 'fix-head-actions';
+      const viewBtn = document.createElement('button');
+      viewBtn.type = 'button';
+      viewBtn.className = 'action-btn action-btn-png';
+      viewBtn.textContent = 'View original';
+      viewBtn.onclick = () => openOriginalViewer(index);
+      head.appendChild(viewBtn);
+      panel.appendChild(head);
+
+      const rows = [];
       item.skipped.forEach(sk => {
         const row = document.createElement('div');
         row.className = 'fix-row';
+        const labelText = sk.label || (sk.column || 'Value').replace(/[:\s]+$/, '');
 
         const label = document.createElement('div');
         label.className = 'fix-label';
-        label.textContent = (sk.column || 'Value').replace(/[:\s]+$/, '');
+        label.textContent = labelText;
 
         const views = document.createElement('div');
         views.className = 'fix-views';
@@ -1678,56 +1805,80 @@
         const input = document.createElement('input');
         input.type = 'text';
         input.className = 'fix-input';
-        input.placeholder = 'Type the value';
+        input.placeholder = 'Type the exact value';
         input.spellcheck = false;
-        input.addEventListener('keydown', e => { if (e.key === 'Enter') apply.click(); });
-        field.appendChild(input);
-        const guess = (sk.text || '').trim();
-        if (guess) {
-          const chip = document.createElement('button');
-          chip.type = 'button';
-          chip.className = 'fix-suggest';
-          chip.innerHTML = `Use tool's reading: <b></b>`;
-          chip.querySelector('b').textContent = guess;
-          chip.title = 'Fill the box with what the tool read. Check it against the original first.';
-          chip.onclick = () => { input.value = guess; input.focus(); };
-          field.appendChild(chip);
-        }
-        inputs.push([sk, input]);
+        input.value = (sk.suggestion || sk.text || '').trim();
+        const hint = document.createElement('div');
+        hint.className = 'fix-hint';
+        hint.textContent = input.value ? "Tool's reading — check it against the original" : 'The tool could not read this — type it';
+
+        const buttons = document.createElement('div');
+        buttons.className = 'fix-buttons';
+        const save = document.createElement('button');
+        save.type = 'button';
+        save.className = 'action-btn action-btn-pdf';
+        save.textContent = 'Save';
+        const show = document.createElement('button');
+        show.type = 'button';
+        show.className = 'action-btn action-btn-plain';
+        show.textContent = 'Show on original';
+        show.onclick = () => openOriginalViewer(index, sk.box, labelText);
+        const status = document.createElement('span');
+        status.className = 'fix-status';
+        buttons.append(save, show, status);
+
+        const entry = { sk, input, row, status, saved: false };
+        rows.push(entry);
+        input.addEventListener('focus', () => input.select());
+        input.addEventListener('input', () => {
+          entry.saved = false; row.classList.remove('saved'); status.textContent = ''; updateTitle();
+        });
+        input.addEventListener('keydown', e => { if (e.key === 'Enter') save.click(); });
+        save.onclick = async () => {
+          if (!input.value.trim()) { input.focus(); return alert('Type the value first.'); }
+          save.disabled = true;
+          status.textContent = 'Saving…';
+          try {
+            await saveFixValues(index, [entry]);
+            entry.saved = true;
+            row.classList.add('saved');
+            status.textContent = 'Saved ✓';
+            updateTitle();
+            const next = rows.find(r => !r.saved);
+            if (next) next.input.focus({ preventScroll: true });
+          } catch (err) {
+            status.textContent = '';
+            alert(err.message);
+          } finally {
+            save.disabled = false;
+          }
+        };
+
+        field.append(input, hint, buttons);
         row.append(label, views, field);
         panel.appendChild(row);
       });
 
-      const apply = document.createElement('button');
-      apply.className = 'action-btn action-btn-pdf fix-apply';
-      apply.textContent = 'Apply';
-      apply.onclick = async () => {
-        const typed = new Map(inputs.filter(([, i]) => i.value.trim()).map(([sk, i]) => [sk.id, i.value.trim()]));
-        if (!typed.size) return alert('Type at least one value.');
-        apply.disabled = true;
+      const saveAll = document.createElement('button');
+      saveAll.className = 'action-btn action-btn-pdf fix-apply';
+      saveAll.textContent = 'Save all';
+      saveAll.onclick = async () => {
+        const todo = rows.filter(r => !r.saved && r.input.value.trim());
+        if (!todo.length) return alert(rows.every(r => r.saved) ? 'Everything is already saved.' : 'Type at least one value.');
+        saveAll.disabled = true;
         try {
-          const items = item.items.map(it => typed.has(it.id) ? { ...it, text: typed.get(it.id), confirmed: true, typed: true } : it);
-          const res = await fetch('/api/ocr/redraw', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ data_url: item.enhanced_url, scale: item.scale, items })
-          });
-          const data = await res.json();
-          if (!data.success) throw new Error(data.error || 'Could not apply the values.');
-          item.items = items;
-          item.data_url = data.data_url;
-          setCardImage(index);
-          title.innerHTML = '<strong>Done</strong><span>Download PDF / PNG now include the values you entered.</span>';
-          panel.classList.add('done');
+          await saveFixValues(index, todo);
+          todo.forEach(r => { r.saved = true; r.row.classList.add('saved'); r.status.textContent = 'Saved ✓'; });
+          updateTitle();
         } catch (err) {
           alert(err.message);
         } finally {
-          apply.disabled = false;
+          saveAll.disabled = false;
         }
       };
-      panel.appendChild(apply);
+      panel.appendChild(saveAll);
+      updateTitle();
       card.querySelector('.card-body').prepend(panel);
-      const first = inputs[0] && inputs[0][1];
-      if (first) first.focus({ preventScroll: true });
     }
   </script>
 </body>

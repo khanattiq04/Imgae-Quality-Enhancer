@@ -382,3 +382,41 @@ class StrongReaderTests(unittest.TestCase):
         big = np.asarray(img.resize((240, 96), Image.Resampling.BICUBIC))
         text, conf = tr._constrained_decode(big, tr.CHARSETS["number"])
         self.assertEqual(text, "145")
+
+
+class OnlineFallbackTests(unittest.TestCase):
+    def test_without_ocr_the_button_still_returns_a_sharpened_image(self):
+        client = api.app.test_client()
+        buf = io.BytesIO()
+        receipt_canvas().save(buf, format="PNG")
+        with mock.patch.object(api.text_redraw, "ocr_available", return_value=False):
+            res = client.post("/api/ocr/auto", data={"file": (io.BytesIO(buf.getvalue()), "r.png"), "scale": "2"},
+                              content_type="multipart/form-data")
+        body = res.get_json()
+        self.assertEqual(res.status_code, 200, body)
+        self.assertIn("desktop app", body["note"])
+        self.assertEqual(body["items"], [])
+
+
+class BestGuessTests(unittest.TestCase):
+    """Pre-filled readings for values the tool was not sure of."""
+
+    def item(self, column, text, confirmed=False, row=(0, 10), **extra):
+        return dict(column=column, text=text, confirmed=confirmed, row=row, table=0, **extra)
+
+    def test_text_snaps_to_known_name(self):
+        it = self.item("Material", "Cruh 1/2-38")
+        self.assertEqual(api._best_guess(it, [it], {"material": ["Crush 1/2+3/8"]}), "Crush 1/2+3/8")
+
+    def test_row_sum_solves_rate(self):
+        parts = [self.item("Material Rate", "56", True), self.item("Carriage", "109", True),
+                 self.item("Service Charges", "2", True), self.item("Rate/FT", "167.80")]
+        self.assertEqual(api._best_guess(parts[3], parts, {}), "167.00")
+
+    def test_blurry_title_and_lookalike_digits(self):
+        it = self.item("Ralesn", "16L80")
+        self.assertEqual(api._best_guess(it, [it], {}), "161.80")
+
+    def test_words_are_not_turned_into_numbers(self):
+        it = self.item("Sr No:", "Notet")
+        self.assertEqual(api._best_guess(it, [it], {}), "Notet")

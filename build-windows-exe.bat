@@ -9,6 +9,13 @@ if errorlevel 1 (
   exit /b 1
 )
 
+findstr /C:"YOUR-SITE" license_check.py >nul
+if not errorlevel 1 (
+  echo Put your Vercel address in license_check.py ^(LICENSE_URL^) before building.
+  pause
+  exit /b 1
+)
+
 py -3 -m pip install --upgrade pip
 py -3 -m pip install -r requirements-desktop.txt
 py -3 -m PyInstaller --noconfirm --clean --onefile --windowed --name ScreenshotHDPrintEnhancer --add-data "public;public" --add-data "models;models" --collect-all webview --collect-all cv2 --collect-all rapidocr_onnxruntime --collect-all onnxruntime desktop.py
